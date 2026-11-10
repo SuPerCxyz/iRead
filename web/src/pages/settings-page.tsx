@@ -42,11 +42,9 @@ export function SettingsPage() {
 
   return (
     <div className="iread-page">
-      <header className="iread-page__header">
-        <h1 className="iread-page__title" data-route-heading tabIndex={-1}>
-          设置
-        </h1>
-      </header>
+      <h1 className="iread-sr-only" data-route-heading tabIndex={-1}>
+        设置
+      </h1>
 
       <div className="iread-page__content">
         <Tabs

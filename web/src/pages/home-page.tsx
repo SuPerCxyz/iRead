@@ -61,11 +61,9 @@ export function HomePage() {
 
   return (
     <div className="iread-page iread-home">
-      <header className="iread-page__header">
-        <h1 className="iread-page__title" data-route-heading tabIndex={-1}>
-          首页
-        </h1>
-      </header>
+      <h1 className="iread-sr-only" data-route-heading tabIndex={-1}>
+        首页
+      </h1>
 
       <div className="iread-page__content iread-home__content">
         {recentAdded.isPending ? (

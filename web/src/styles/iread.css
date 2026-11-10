@@ -379,6 +379,7 @@ html[data-density="relaxed"] {
 }
 
 .iread-topbar__separator {
+  display: none;
   height: calc(var(--spacing) * 4);
   margin-inline-end: calc(var(--spacing) * 2);
 }
@@ -403,15 +404,15 @@ html[data-density="relaxed"] {
   );
 }
 
-.iread-page__header {
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--spacing) * 1);
-}
-
-.iread-page__title {
-  @apply text-2xl font-semibold tracking-tight;
-  margin: 0;
+.iread-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .iread-page__content {
@@ -594,8 +595,13 @@ html[data-density="relaxed"] {
 }
 
 .iread-sidebar-trigger {
+  display: none;
   min-width: calc(var(--spacing) * 11);
   min-height: calc(var(--spacing) * 11);
+}
+
+.iread-sidebar-toggle-item {
+  display: block;
 }
 
 html[data-nav-compact="true"] [data-slot="sidebar-content"] {
@@ -776,6 +782,18 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
     padding-inline: calc(var(--spacing) * 3);
   }
 
+  .iread-topbar .iread-sidebar-trigger {
+    display: inline-flex;
+  }
+
+  .iread-topbar__separator {
+    display: block;
+  }
+
+  .iread-sidebar-toggle-item {
+    display: none;
+  }
+
   .iread-topbar
     [data-slot="breadcrumb-list"]:has(
       > [data-slot="breadcrumb-item"]:nth-child(3)
@@ -801,10 +819,6 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
       var(--iread-mobile-nav-height) + calc(var(--spacing) * 4) +
         env(safe-area-inset-bottom)
     );
-  }
-
-  .iread-page__title {
-    @apply text-xl;
   }
 
   .iread-auth {
@@ -1171,6 +1185,8 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-library__summary {
   margin: 0;
+  margin-inline-start: auto;
+  align-self: center;
   color: var(--muted-foreground);
   font-size: 0.875rem;
 }
@@ -3038,14 +3054,6 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 /* 书库查询、视图设置与移动筛选 */
-
-.iread-library__header {
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: calc(var(--spacing) * 2);
-}
 
 .iread-library__toolbar {
   display: flex;

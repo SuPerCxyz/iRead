@@ -166,17 +166,9 @@ export function LibraryPage() {
       data-cover-radius={view.value.coverRadius}
       data-card-gap={view.value.cardGap}
     >
-      <header className="iread-page__header iread-library__header">
-        <h1 className="iread-page__title" data-route-heading tabIndex={-1}>
-          书库
-        </h1>
-        {total !== null ? (
-          <p className="iread-library__summary">
-            {narrowFilters ? "匹配 " : "共 "}
-            {total} 本图书
-          </p>
-        ) : null}
-      </header>
+      <h1 className="iread-sr-only" data-route-heading tabIndex={-1}>
+        书库
+      </h1>
 
       <div className="iread-page__content iread-library__content">
         <div className="iread-library__toolbar">
@@ -266,6 +258,12 @@ export function LibraryPage() {
           >
             <Link to="/settings?group=bookshelf">视图设置</Link>
           </Button>
+          {total !== null ? (
+            <p className="iread-library__summary">
+              {narrowFilters ? "匹配 " : "共 "}
+              {total} 本图书
+            </p>
+          ) : null}
         </div>
 
         {showClearFilters ? (

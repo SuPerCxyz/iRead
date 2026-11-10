@@ -1,4 +1,12 @@
-import { BookOpen, LogOut, ShieldOff, Upload, User, X } from "lucide-react"
+import {
+  BookOpen,
+  LogOut,
+  PanelLeft,
+  ShieldOff,
+  Upload,
+  User,
+  X,
+} from "lucide-react"
 import { Link } from "react-router-dom"
 
 import { Button } from "@/components/ui/button"
@@ -23,9 +31,11 @@ import { useSidebarFocusReturn } from "./use-sidebar-focus-return"
 
 export function AppSidebar() {
   useSidebarFocusReturn()
-  const { isMobile, setOpenMobile } = useSidebar()
+  const { isMobile, setOpenMobile, state, toggleSidebar } = useSidebar()
   const { busy, logout, devNoAuth } = useAuth()
   const { openUpload } = useUploads()
+  const isCollapsed = state === "collapsed"
+  const toggleLabel = isCollapsed ? "展开导航" : "收起导航"
 
   return (
     <Sidebar collapsible="icon">
@@ -85,6 +95,17 @@ export function AppSidebar() {
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem className="iread-sidebar-toggle-item">
+            <SidebarMenuButton
+              type="button"
+              tooltip={toggleLabel}
+              aria-label={toggleLabel}
+              onClick={toggleSidebar}
+            >
+              <PanelLeft aria-hidden="true" />
+              <span>{toggleLabel}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           {devNoAuth ? (
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="开发模式 · 无密码">

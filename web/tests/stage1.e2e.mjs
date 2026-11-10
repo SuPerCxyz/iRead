@@ -300,6 +300,62 @@ async function main() {
     await gotoRoute(desktopPage, "/no-such-route", "页面不存在", 404)
     console.log("[E2E] 六路由通过")
 
+    logStep("桌面侧栏折叠控件与页面标题去重")
+    await gotoRoute(desktopPage, "/", "首页")
+    assert.equal(
+      await desktopPage.getByRole("button", { name: "切换导航" }).isVisible(),
+      false,
+      "桌面顶栏不应再显示侧栏触发器",
+    )
+    const desktopToggle = desktopPage
+      .locator('[data-slot="sidebar"]')
+      .getByRole("button", { name: "收起导航" })
+    await desktopToggle.waitFor()
+    assert.ok(await desktopToggle.isVisible(), "桌面折叠控件应位于侧栏内")
+    const headingBox = await desktopPage
+      .getByRole("heading", { level: 1, name: "首页" })
+      .boundingBox()
+    assert.ok(headingBox !== null && headingBox.width <= 1 && headingBox.height <= 1,
+      "路由标题应保留为可访问的隐藏 h1，不再占据页面文案行")
+    assert.ok(
+      await desktopPage
+        .locator('[data-slot="breadcrumb-page"]')
+        .getByText("首页", { exact: true })
+        .isVisible(),
+      "顶部面包屑应继续显示当前页面名称",
+    )
+    await desktopToggle.click()
+    await desktopPage
+      .getByRole("button", { name: "展开导航" })
+      .waitFor()
+    assert.equal(
+      await desktopPage
+        .locator('[data-slot="sidebar"]')
+        .getAttribute("data-state"),
+      "collapsed",
+      "点击侧栏折叠控件后应进入图标模式",
+    )
+    await desktopPage.getByRole("button", { name: "展开导航" }).click()
+    await desktopPage
+      .getByRole("button", { name: "收起导航" })
+      .waitFor()
+    assert.equal(
+      await desktopPage
+        .locator('[data-slot="sidebar"]')
+        .getAttribute("data-state"),
+      "expanded",
+      "再次点击侧栏控件应恢复展开",
+    )
+    await gotoRoute(desktopPage, "/library", "书库")
+    const librarySummary = desktopPage.locator(".iread-library__summary")
+    await librarySummary.waitFor()
+    assert.match(
+      await librarySummary.innerText(),
+      /^(?:共|匹配) \d+ 本图书$/,
+      "书库数量摘要应保留且不再占用整行标题区",
+    )
+    console.log("[E2E] 桌面侧栏折叠与标题去重通过")
+
     logStep("尾斜杠 breadcrumb 与 aria-current")
     await gotoRoute(desktopPage, "/library/", "书库")
     assert.equal(
