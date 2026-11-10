@@ -3,6 +3,7 @@ export {
   createPdfReaderEngine,
 } from "./engine"
 export type {
+  PdfOutlineRequestOptions,
   PdfPageMetrics,
   PdfReaderEngineOptions,
   PdfReaderResult,

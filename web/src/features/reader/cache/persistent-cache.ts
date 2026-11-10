@@ -30,6 +30,16 @@ export const CONTENT_CACHE_NAME = "iread-content-v1"
 export const PDF_CACHE_PREFIX = "iread-pdf-"
 export const PDF_CHUNK_SIZE = 65_536
 
+/**
+ * 预算检查节流：PDF 首次填充会写入上千个 64KiB 块，若每块都整库
+ * getAll() 会退化为 O(n²)。账本增量维护，淘汰按块数/时间触发。
+ */
+const BUDGET_WRITE_INTERVAL = 32
+const BUDGET_TIME_INTERVAL_MS = 2_000
+const BUDGET_LEDGER_RESEED_MS = 5 * 60_000
+/** 访问时间最多每 30s 回写一次；同时不超过层 TTL 的 1/10。 */
+const BUDGET_ACCESS_TOUCH_MAX_MS = 30_000
+
 export interface ResourceCacheEntry {
   blob: Blob
   mediaType: string
@@ -206,6 +216,13 @@ function jsonBytes(value: unknown): number {
   }
 }
 
+function budgetEntryKey(
+  store: BudgetEntry["store"],
+  key: string,
+): string {
+  return `${store}\u0000${key}`
+}
+
 export class ReaderPersistentCache {
   readonly #tier: CacheTier
   readonly #budget: CacheLayerBudget
@@ -217,6 +234,14 @@ export class ReaderPersistentCache {
   #opening: Promise<void> | null = null
   #generation = 0
   #closed = false
+  /** 预算账本：装载一次后按写入增量维护，避免每次写入整库扫描。 */
+  #ledger: Map<string, BudgetEntry> | null = null
+  #ledgerBytes = 0
+  #ledgerLoadedAt = 0
+  #ledgerLoading: Promise<void> | null = null
+  #budgetWrites = 0
+  #lastBudgetCheck = 0
+  #budgetQueue: Promise<unknown> = Promise.resolve()
 
   constructor(options: PersistentCacheOptions = {}) {
     this.#tier = options.tier ?? detectCacheTier()
@@ -336,6 +361,9 @@ export class ReaderPersistentCache {
     this.#closed = true
     this.#db?.close()
     this.#db = null
+    this.#ledger = null
+    this.#ledgerBytes = 0
+    this.#ledgerLoadedAt = 0
   }
 
   dispose(): void {
@@ -412,6 +440,8 @@ export class ReaderPersistentCache {
     ) {
       if (meta !== null) {
         await this.#deleteContentEntry(db, cache, keyId)
+      } else {
+        this.#removeLedgerEntry(READER_CACHE_CONTENT_STORE, keyId)
       }
       return null
     }
@@ -419,6 +449,7 @@ export class ReaderPersistentCache {
     const response = await cache.match(request)
     if (response === undefined) {
       await this.#deleteContentMeta(db, keyId)
+      this.#removeLedgerEntry(READER_CACHE_CONTENT_STORE, keyId)
       return null
     }
     if (
@@ -430,8 +461,12 @@ export class ReaderPersistentCache {
       return null
     }
     const blob = await response.blob()
-    const touched = { ...meta, lastAccess: this.#now() }
-    void this.#putContentMeta(db, touched).catch(() => undefined)
+    const now = this.#now()
+    if (now - meta.lastAccess > this.#accessTouchIntervalMs()) {
+      const touched = { ...meta, lastAccess: now }
+      void this.#putContentMeta(db, touched).catch(() => undefined)
+    }
+    this.#touchLedger(READER_CACHE_CONTENT_STORE, keyId, now)
     return {
       blob,
       mediaType:
@@ -523,7 +558,12 @@ export class ReaderPersistentCache {
         error: errorMessage(error),
       }
     }
-    await this.#enforceBudget(db)
+    await this.#recordWrite(db, {
+      store: READER_CACHE_CONTENT_STORE,
+      key: keyId,
+      bytes: input.blob.size,
+      lastAccess: now,
+    })
     return {
       stored: true,
       bytes: input.blob.size,
@@ -552,22 +592,30 @@ export class ReaderPersistentCache {
       await transactionDone(tx)
       return null
     }
+    const now = this.#now()
     if (record.generation !== this.#generation) {
       store.delete(keyId)
       await transactionDone(tx)
+      this.#removeLedgerEntry(READER_CACHE_PDF_STORE, keyId)
       return null
     }
-    if (this.#now() - record.lastAccess > this.#budget.maxAgeMs) {
+    if (now - record.lastAccess > this.#budget.maxAgeMs) {
       store.delete(keyId)
       await transactionDone(tx)
+      this.#removeLedgerEntry(READER_CACHE_PDF_STORE, keyId)
       return null
     }
-    const touched: PdfChunkRecord = {
-      ...record,
-      lastAccess: this.#now(),
+    // 高频顺序读取不逐块回写 lastAccess；内存账本仍立即更新，
+    // 保证进程内 LRU 排序准确。
+    if (now - record.lastAccess > this.#accessTouchIntervalMs()) {
+      const touched: PdfChunkRecord = {
+        ...record,
+        lastAccess: now,
+      }
+      store.put(touched)
     }
-    store.put(touched)
     await transactionDone(tx)
+    this.#touchLedger(READER_CACHE_PDF_STORE, keyId, now)
     return {
       bytes: record.bytes,
       totalBytes: record.totalBytes,
@@ -659,7 +707,12 @@ export class ReaderPersistentCache {
         error: errorMessage(error),
       }
     }
-    await this.#enforceBudget(db)
+    await this.#recordWrite(db, {
+      store: READER_CACHE_PDF_STORE,
+      key: keyId,
+      bytes: input.bytes.byteLength,
+      lastAccess: now,
+    })
     return {
       stored: true,
       bytes: input.bytes.byteLength,
@@ -678,25 +731,25 @@ export class ReaderPersistentCache {
     const record = await requestToPromise<ManifestRecord | undefined>(
       store.get(bookId),
     )
+    const now = this.#now()
     if (
       record === undefined ||
       record.fileVersion !== fileVersion ||
       record.generation !== this.#generation ||
-      this.#now() - record.lastAccess > this.#budget.maxAgeMs
+      now - record.lastAccess > this.#budget.maxAgeMs
     ) {
-      if (
-        record !== undefined &&
-        (record.fileVersion !== fileVersion ||
-          record.generation !== this.#generation ||
-          this.#now() - record.lastAccess > this.#budget.maxAgeMs)
-      ) {
+      if (record !== undefined) {
         store.delete(bookId)
       }
       await transactionDone(tx)
+      this.#removeLedgerEntry(READER_CACHE_MANIFEST_STORE, bookId)
       return null
     }
-    store.put({ ...record, lastAccess: this.#now() })
+    if (now - record.lastAccess > this.#accessTouchIntervalMs()) {
+      store.put({ ...record, lastAccess: now })
+    }
     await transactionDone(tx)
+    this.#touchLedger(READER_CACHE_MANIFEST_STORE, bookId, now)
     return record.manifest as T
   }
 
@@ -748,13 +801,18 @@ export class ReaderPersistentCache {
         error: errorMessage(error),
       }
     }
-    await this.#enforceBudget(db)
+    await this.#recordWrite(db, {
+      store: READER_CACHE_MANIFEST_STORE,
+      key: input.bookId,
+      bytes,
+      lastAccess: now,
+    })
     return { stored: true, bytes, generation }
   }
 
   async usage(): Promise<PersistentCacheUsage> {
     const db = await this.#requireDb()
-    await this.#enforceBudget(db)
+    await this.#enforceBudget(db, true)
     const tx = db.transaction(
       [
         READER_CACHE_CONTENT_STORE,
@@ -916,6 +974,14 @@ export class ReaderPersistentCache {
         retryable: true,
       })
     }
+    // 无论清理是否部分失败，都丢弃旧账本；下次使用时从实际 store 重建。
+    await this.#queueBudget(async () => {
+      this.#ledger = null
+      this.#ledgerBytes = 0
+      this.#ledgerLoadedAt = 0
+      this.#budgetWrites = 0
+      this.#lastBudgetCheck = 0
+    }).catch(() => undefined)
 
     let remaining: CacheLayerUsage = { bytes: 0, entries: 0 }
     try {
@@ -999,10 +1065,16 @@ export class ReaderPersistentCache {
   ): Promise<void> {
     await cache.delete(contentRequest(key)).catch(() => undefined)
     await this.#deleteContentMeta(db, key)
+    this.#removeLedgerEntry(READER_CACHE_CONTENT_STORE, key)
   }
 
-  async #enforceBudget(db: IDBDatabase): Promise<void> {
-    let entries: BudgetEntry[]
+  /**
+   * 读取三个 store 的预算元数据；只在装载/重建内存账本时调用。
+   * 失败返回 null，预算检查按尽力而为处理。
+   */
+  async #readBudgetEntries(
+    db: IDBDatabase,
+  ): Promise<BudgetEntry[] | null> {
     try {
       const tx = db.transaction(
         [
@@ -1022,7 +1094,7 @@ export class ReaderPersistentCache {
         tx.objectStore(READER_CACHE_MANIFEST_STORE).getAll(),
       )
       await transactionDone(tx)
-      entries = [
+      return [
         ...content.map((record): BudgetEntry => ({
           store: READER_CACHE_CONTENT_STORE,
           key: record.key,
@@ -1043,35 +1115,223 @@ export class ReaderPersistentCache {
         })),
       ]
     } catch {
+      return null
+    }
+  }
+
+  #replaceLedger(entries: BudgetEntry[]): void {
+    const ledger = new Map<string, BudgetEntry>()
+    let bytes = 0
+    for (const entry of entries) {
+      ledger.set(budgetEntryKey(entry.store, entry.key), entry)
+      bytes += entry.bytes
+    }
+    this.#ledger = ledger
+    this.#ledgerBytes = bytes
+    this.#ledgerLoadedAt = this.#now()
+  }
+
+  async #ensureLedger(db: IDBDatabase): Promise<boolean> {
+    if (this.#ledger !== null) {
+      return true
+    }
+    if (this.#ledgerLoading === null) {
+      this.#ledgerLoading = (async () => {
+        const entries = await this.#readBudgetEntries(db)
+        if (entries !== null && this.#ledger === null) {
+          this.#replaceLedger(entries)
+        }
+      })()
+    }
+    const loading = this.#ledgerLoading
+    try {
+      await loading
+    } finally {
+      if (this.#ledgerLoading === loading) {
+        this.#ledgerLoading = null
+      }
+    }
+    return this.#ledger !== null
+  }
+
+  async #rebuildLedger(db: IDBDatabase): Promise<boolean> {
+    const entries = await this.#readBudgetEntries(db)
+    if (entries === null) {
+      return false
+    }
+    this.#replaceLedger(entries)
+    return true
+  }
+
+  /**
+   * 账本更新与淘汰串行执行，避免并发写入/重建互相覆盖计数。
+   */
+  #queueBudget<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.#budgetQueue.then(operation, operation)
+    this.#budgetQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  #upsertLedger(entry: BudgetEntry): void {
+    const ledger = this.#ledger
+    if (ledger === null) {
       return
     }
-    let totalBytes = entries.reduce(
-      (total, entry) => total + entry.bytes,
-      0,
+    const key = budgetEntryKey(entry.store, entry.key)
+    const existing = ledger.get(key)
+    this.#ledgerBytes += entry.bytes - (existing?.bytes ?? 0)
+    ledger.set(key, entry)
+  }
+
+  #touchLedger(
+    store: BudgetEntry["store"],
+    key: string,
+    lastAccess: number,
+  ): void {
+    const entry = this.#ledger?.get(budgetEntryKey(store, key))
+    if (entry !== undefined) {
+      entry.lastAccess = lastAccess
+    }
+  }
+
+  #removeLedgerEntry(
+    store: BudgetEntry["store"],
+    key: string,
+  ): void {
+    const ledger = this.#ledger
+    if (ledger === null) {
+      return
+    }
+    const entryKey = budgetEntryKey(store, key)
+    const entry = ledger.get(entryKey)
+    if (entry === undefined) {
+      return
+    }
+    ledger.delete(entryKey)
+    this.#ledgerBytes = Math.max(0, this.#ledgerBytes - entry.bytes)
+  }
+
+  /** 读命中最多按层 TTL 的 1/10、且不超过 30s 回写一次 lastAccess。 */
+  #accessTouchIntervalMs(): number {
+    const maxAge = this.#budget.maxAgeMs
+    if (!Number.isFinite(maxAge) || maxAge <= 0) {
+      return 0
+    }
+    return Math.min(
+      BUDGET_ACCESS_TOUCH_MAX_MS,
+      Math.floor(maxAge / 10),
     )
+  }
+
+  /**
+   * 写入成功后增量更新账本，并按块数/时间节流执行预算淘汰，
+   * 不再在每个 64KiB 块后整库 getAll()。
+   */
+  async #recordWrite(
+    db: IDBDatabase,
+    entry: BudgetEntry,
+  ): Promise<void> {
+    try {
+      await this.#queueBudget(async () => {
+        if (!(await this.#ensureLedger(db))) {
+          return
+        }
+        this.#upsertLedger(entry)
+        this.#budgetWrites += 1
+        const now = this.#now()
+        const ledger = this.#ledger
+        const overBudget =
+          ledger !== null &&
+          (this.#ledgerBytes > this.#budget.maxBytes ||
+            ledger.size > this.#budget.maxEntries)
+        if (
+          overBudget ||
+          this.#budgetWrites >= BUDGET_WRITE_INTERVAL ||
+          now - this.#lastBudgetCheck >= BUDGET_TIME_INTERVAL_MS
+        ) {
+          await this.#enforceBudgetLocked(db, false)
+        }
+      })
+    } catch {
+      // 预算记账失败不阻塞缓存写入；下次写入或 usage() 会重试。
+    }
+  }
+
+  async #enforceBudget(
+    db: IDBDatabase,
+    rebuild = false,
+  ): Promise<void> {
+    await this.#queueBudget(async () => {
+      try {
+        await this.#enforceBudgetLocked(db, rebuild)
+      } catch {
+        // 预算检查失败不阻塞读取/写入。
+      }
+    })
+  }
+
+  #hasExpiredEntries(
+    ledger: Map<string, BudgetEntry>,
+    now: number,
+  ): boolean {
+    for (const entry of ledger.values()) {
+      if (now - entry.lastAccess > this.#budget.maxAgeMs) {
+        return true
+      }
+    }
+    return false
+  }
+
+  async #enforceBudgetLocked(
+    db: IDBDatabase,
+    rebuild: boolean,
+  ): Promise<void> {
     const now = this.#now()
-    const expired = entries.filter(
-      (entry) => now - entry.lastAccess > this.#budget.maxAgeMs,
-    ).length
+    this.#lastBudgetCheck = now
+    this.#budgetWrites = 0
+    if (rebuild) {
+      if (!(await this.#rebuildLedger(db))) {
+        return
+      }
+    } else if (!(await this.#ensureLedger(db))) {
+      return
+    }
+    // 账本可能落后于其它标签页；定期重建，避免长期漏记。
+    if (now - this.#ledgerLoadedAt >= BUDGET_LEDGER_RESEED_MS) {
+      if (!(await this.#rebuildLedger(db))) {
+        return
+      }
+    }
+    const ledger = this.#ledger
+    if (ledger === null) {
+      return
+    }
     if (
-      expired === 0 &&
-      totalBytes <= this.#budget.maxBytes &&
-      entries.length <= this.#budget.maxEntries
+      !this.#hasExpiredEntries(ledger, now) &&
+      this.#ledgerBytes <= this.#budget.maxBytes &&
+      ledger.size <= this.#budget.maxEntries
     ) {
       return
     }
-    entries.sort((a, b) => a.lastAccess - b.lastAccess)
+    const entries = [...ledger.values()].sort(
+      (a, b) => a.lastAccess - b.lastAccess,
+    )
     const cache =
       this.#cacheStorage === null
         ? null
         : await this.#requireContentCache().catch(() => null)
+    let totalBytes = this.#ledgerBytes
+    let totalEntries = ledger.size
     for (const entry of entries) {
       const isExpired =
         now - entry.lastAccess > this.#budget.maxAgeMs
       if (
         !isExpired &&
         totalBytes <= this.#budget.maxBytes &&
-        entries.length <= this.#budget.maxEntries
+        totalEntries <= this.#budget.maxEntries
       ) {
         break
       }
@@ -1089,7 +1349,8 @@ export class ReaderPersistentCache {
           await transactionDone(tx)
         }
         totalBytes -= entry.bytes
-        entries = entries.filter((candidate) => candidate !== entry)
+        totalEntries -= 1
+        this.#removeLedgerEntry(entry.store, entry.key)
       } catch {
         // 单条淘汰失败不阻塞其它条目；下次写入再重试。
       }

@@ -195,6 +195,15 @@ func (h *LibraryHandlers) handleBookItem(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		h.getCover(w, r, bookID)
+	case len(parts) == 2 && parts[1] == "reindex":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeLibraryError(w, r, http.StatusMethodNotAllowed, "invalid_request", "请求方法不支持", nil)
+			return
+		}
+		h.mutation(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h.reindexBook(w, r, bookID)
+		})).ServeHTTP(w, r)
 	default:
 		writeLibraryError(w, r, http.StatusNotFound, "not_found", "书籍不存在", nil)
 	}
@@ -209,6 +218,20 @@ func (h *LibraryHandlers) getBook(w http.ResponseWriter, r *http.Request, bookID
 	dto := bookDetailDTOFrom(detail)
 	dto.Progress = progressDTOFromSummary(detail.BookSummary)
 	writeLibraryData(w, http.StatusOK, dto)
+}
+
+type reindexTaskDTO struct {
+	TaskID string `json:"taskId"`
+}
+
+// reindexBook 创建新的 book.index 任务；已有活动任务时返回同一 taskId（202）。
+func (h *LibraryHandlers) reindexBook(w http.ResponseWriter, r *http.Request, bookID string) {
+	task, _, apiErr := h.service.ReindexBook(r.Context(), bookID)
+	if apiErr != nil {
+		h.writeServiceError(w, r, apiErr)
+		return
+	}
+	writeLibraryData(w, http.StatusAccepted, reindexTaskDTO{TaskID: task.ID})
 }
 
 func (h *LibraryHandlers) getCover(w http.ResponseWriter, r *http.Request, bookID string) {

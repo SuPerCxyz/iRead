@@ -173,6 +173,60 @@ func (s *Service) GetBookDetail(ctx context.Context, bookID string) (store.BookD
 	return detail, nil
 }
 
+// ReindexBook 为已存在且可重索引的书籍创建新的 book.index 任务。
+//
+// 可重索引状态：ready（包含 extraction_status=partial）与 error。若该书已有
+// queued/running 任务，则幂等返回同一任务，created=false，不重复入队；接口层
+// 据此统一返回 202 与同一 taskId。unsupported 与无活动任务的 indexing 状态
+// 返回 409，避免把不可索引或状态异常的书重复推进队列。
+func (s *Service) ReindexBook(ctx context.Context, bookID string) (store.Task, bool, *Error) {
+	detail, apiErr := s.GetBookDetail(ctx, bookID)
+	if apiErr != nil {
+		return store.Task{}, false, apiErr
+	}
+
+	active, found, err := s.store.ActiveBookIndexTask(ctx, bookID)
+	if err != nil {
+		s.logger.Error("读取活动索引任务失败", "bookId", bookID, "error", err)
+		return store.Task{}, false, newError(500, "internal_error", "服务器内部错误")
+	}
+	if found {
+		return active, false, nil
+	}
+
+	switch detail.Status {
+	case "ready", "error":
+	case "indexing":
+		return store.Task{}, false, newReasonError(409, "state_conflict",
+			"书籍正在索引，请稍后重试", "index_in_progress")
+	default:
+		return store.Task{}, false, newReasonError(409, "state_conflict",
+			"该书当前状态不支持重新索引", "book_not_reindexable")
+	}
+
+	task, err := s.store.CreateBookIndexTask(ctx, bookID)
+	if err == nil {
+		return task, true, nil
+	}
+	if errors.Is(err, store.ErrActiveTask) {
+		// 检查与创建之间被并发请求抢先；返回先入队的任务，保持幂等。
+		active, found, activeErr := s.store.ActiveBookIndexTask(ctx, bookID)
+		if activeErr == nil && found {
+			return active, false, nil
+		}
+		if activeErr != nil {
+			s.logger.Error("读取并发索引任务失败", "bookId", bookID, "error", activeErr)
+		}
+		return store.Task{}, false, newReasonError(409, "state_conflict",
+			"书籍正在索引，请稍后重试", "index_in_progress")
+	}
+	if errors.Is(err, store.ErrBookNotFound) {
+		return store.Task{}, false, newError(404, "not_found", "书籍不存在")
+	}
+	s.logger.Error("创建重新索引任务失败", "bookId", bookID, "error", err)
+	return store.Task{}, false, newError(500, "internal_error", "服务器内部错误")
+}
+
 // CoverFile 是已生成的受限封面派生文件；调用方负责关闭。
 type CoverFile struct {
 	File      *os.File

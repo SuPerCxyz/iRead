@@ -172,6 +172,128 @@ export interface PdfChunkPayload {
   etag: string
 }
 
+/** 单个 PDF 会话最多同时挂起的 IndexedDB 写入数。 */
+export const PDF_WRITE_BEHIND_LIMIT = 8
+
+type PdfChunkWriteInput = Omit<
+  Parameters<ReaderCacheRuntime["persistent"]["writePdfChunk"]>[0],
+  "generation"
+> & {
+  /**
+   * 在发起 Range 请求时就开始读取 generation，但不阻塞字节返回；
+   * 真正写入前再等待结果，写入层仍会校验 generation 是否前进。
+   */
+  generation: number | Promise<number>
+}
+
+export interface PdfWriteBehindStats {
+  pending: number
+  stored: number
+  failed: number
+  dropped: number
+}
+
+const writeBehindQueues = new WeakMap<
+  ReaderCacheRuntime["persistent"],
+  PdfChunkWriteBehind
+>()
+
+/**
+ * PDF Range 块的持久化写队列。
+ *
+ * PDF.js 只关心拿到的字节；IndexedDB 写入是尽力而为的旁路。若每次读取
+ * 都 `await writePdfChunk`，缓存层的预算整理或慢磁盘会直接拖住首开。
+ * 这里限制同时挂起的写入数量，超出时丢弃新写入（内存缓存仍然有效），
+ * 写入失败或 generation 过期也只记入统计，不影响本次读取。
+ */
+export class PdfChunkWriteBehind {
+  readonly #persistent: ReaderCacheRuntime["persistent"]
+  readonly #limit: number
+  readonly #pending = new Set<Promise<void>>()
+  readonly #idleWaiters: Array<() => void> = []
+  #stored = 0
+  #failed = 0
+  #dropped = 0
+
+  constructor(
+    persistent: ReaderCacheRuntime["persistent"],
+    limit = PDF_WRITE_BEHIND_LIMIT,
+  ) {
+    this.#persistent = persistent
+    this.#limit = Math.max(1, limit)
+  }
+
+  /** 入队并立即返回；队列饱和时丢弃本次写入并返回 false。 */
+  enqueue(input: PdfChunkWriteInput): boolean {
+    if (this.#pending.size >= this.#limit) {
+      this.#dropped += 1
+      return false
+    }
+    const job = this.#run(input)
+    this.#pending.add(job)
+    void job.finally(() => {
+      this.#pending.delete(job)
+      if (this.#pending.size === 0) {
+        for (const resolve of this.#idleWaiters.splice(0)) {
+          resolve()
+        }
+      }
+    })
+    return true
+  }
+
+  stats(): PdfWriteBehindStats {
+    return {
+      pending: this.#pending.size,
+      stored: this.#stored,
+      failed: this.#failed,
+      dropped: this.#dropped,
+    }
+  }
+
+  /** 等待当前队列清空；测试或卸载前的可选钩子。 */
+  async idle(): Promise<void> {
+    if (this.#pending.size === 0) {
+      return
+    }
+    await new Promise<void>((resolve) => {
+      this.#idleWaiters.push(resolve)
+    })
+  }
+
+  async #run(input: PdfChunkWriteInput): Promise<void> {
+    try {
+      const { generation, ...rest } = input
+      const result = await this.#persistent.writePdfChunk({
+        ...rest,
+        generation: await generation,
+      })
+      if (result.stored) {
+        this.#stored += 1
+        return
+      }
+      // generation 前进后旧块被拒绝是正常淘汰，不计为失败。
+      if (result.reason !== "stale-generation") {
+        this.#failed += 1
+      }
+    } catch {
+      this.#failed += 1
+    }
+  }
+}
+
+/** 同一持久缓存实例共享一个有界写队列。 */
+export function pdfChunkWriteBehind(
+  persistent: ReaderCacheRuntime["persistent"],
+): PdfChunkWriteBehind {
+  let queue = writeBehindQueues.get(persistent)
+  if (queue === undefined) {
+    queue = new PdfChunkWriteBehind(persistent)
+    writeBehindQueues.set(persistent, queue)
+  }
+  return queue
+}
+
 /** 把任意请求区间切成稳定的 64KiB 块，供 L1/L3 键复用。 */
 export function pdfChunkRanges(
   begin: number,
@@ -242,7 +364,9 @@ export async function loadPdfChunk(
     return await cache.scheduler.request(
       key,
       async (jobSignal) => {
-        const generation = await cache.persistent
+        // 读取 generation 用于写入前校验，但不要阻塞首块字节；慢/不可用的
+        // IndexedDB 只影响缓存写入，不应拖住打开 PDF。
+        const generation = cache.persistent
           .currentGeneration()
           .catch(() => 0)
         return fetchPdfChunk(
@@ -332,7 +456,7 @@ async function fetchPdfChunk(
   key: ReturnType<typeof pdfRangeKey>,
   contentUrl: URL,
   range: ResourceRange,
-  generation: number,
+  generation: number | Promise<number>,
   signal: AbortSignal,
   cache: ReaderCacheRuntime,
   options: {
@@ -411,18 +535,17 @@ async function fetchPdfChunk(
     bytes,
     { mediaType: contentType, version: String(contentRange.total) },
   )
-  await cache.persistent
-    .writePdfChunk({
-      key,
-      range,
-      bytes,
-      status: response.status,
-      totalBytes: contentRange.total,
-      contentType,
-      etag,
-      generation,
-    })
-    .catch(() => undefined)
+  // 写缓存不阻塞返回 PDF 字节；慢 IndexedDB 或预算整理不应卡住首开。
+  pdfChunkWriteBehind(cache.persistent).enqueue({
+    key,
+    range,
+    bytes,
+    status: response.status,
+    totalBytes: contentRange.total,
+    contentType,
+    etag,
+    generation,
+  })
   options.onRequest?.({
     begin: range.start,
     end: range.end,

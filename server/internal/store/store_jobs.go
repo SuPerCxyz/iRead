@@ -309,6 +309,26 @@ func (s *Store) CreateBookIndexTask(ctx context.Context, bookID string) (Task, e
 	return task, nil
 }
 
+// ActiveBookIndexTask 返回该书当前 queued/running 的 book.index 任务。
+// 数据库唯一索引保证同一本书最多只有一个活动任务；返回 found=false 表示没有。
+func (s *Store) ActiveBookIndexTask(ctx context.Context, bookID string) (Task, bool, error) {
+	if !validStoreID(bookID) {
+		return Task{}, false, nil
+	}
+	task, err := scanTask(s.db.QueryRowContext(ctx, `
+		SELECT `+taskColumns+` FROM background_tasks
+		WHERE book_id = ? AND kind = ? AND state IN ('queued', 'running')
+		ORDER BY created_at ASC, rowid ASC
+		LIMIT 1`, bookID, TaskKindBookIndex))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, false, nil
+	}
+	if err != nil {
+		return Task{}, false, fmt.Errorf("读取活动索引任务失败: %w", err)
+	}
+	return task, true, nil
+}
+
 // GetTask 读取任务；不存在时返回 TaskNotFoundError。
 func (s *Store) GetTask(ctx context.Context, taskID string) (Task, error) {
 	if !validStoreID(taskID) {

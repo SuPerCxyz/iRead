@@ -58,21 +58,36 @@ import {
 import { pdfPageKey, renderKeyId } from "../cache/resource-key"
 import type { ReaderCacheRuntime } from "../session/reader-cache-runtime"
 import {
+  PdfOutlineTimeoutError,
   buildPdfOutline,
   countOutlineEntries,
+  withPdfOutlineDeadline,
   type PdfOutlineEntry,
 } from "./outline"
+import { PdfOpenWatchdog } from "./open-watchdog"
 
 GlobalWorkerOptions.workerSrc = workerSrc
 
 const PDFJS_ASSET_ROOT = "/pdfjs/"
 const MAX_CANVAS_PIXELS = 8_000_000
-const OPEN_TIMEOUT_MS = 30_000
+/** 打开 PDF 的绝对上限；真正判断卡死的是下面的停滞看门狗。 */
+const OPEN_TIMEOUT_MS = 120_000
+/** 连续多久没有新的已读取字节就判定打开停滞。 */
+const OPEN_STALL_TIMEOUT_MS = 15_000
 const MOBILE_CANVAS_COUNT = 2
 const DESKTOP_CANVAS_COUNT = 4
 const DEFAULT_PAGE_WIDTH = 612
 const DEFAULT_PAGE_HEIGHT = 792
 const NOTICE_TIMEOUT_MS = 4_000
+/** 目录读取上限；PDF.js 的 getOutline() 没有超时，worker 无响应时不能永久卡住面板。 */
+const OUTLINE_TIMEOUT_MS = 10_000
+
+export interface PdfOutlineRequestOptions {
+  /** 关闭面板/切换文档时取消等待；底层解析结果会被丢弃。 */
+  signal?: AbortSignal
+  /** 覆盖默认的 10 秒目录读取上限，供测试使用。 */
+  timeoutMs?: number
+}
 
 export interface PdfPageMetrics {
   width: number
@@ -89,6 +104,11 @@ export interface PdfReaderEngineOptions {
   onBack?: () => void
   fetchImpl?: typeof fetch
   timeoutMs?: number
+  /** 打开结果变化；Shell 用它在重试成功后清除残留提示并刷新页数。 */
+  onOpenStateChange?: (
+    state: "ready" | "error",
+    detail: { pageCount: number },
+  ) => void
   /** Shell 每本书创建的会话缓存运行时；省略时引擎直连网络。 */
   cache?: ReaderCacheRuntime | null
 }
@@ -233,31 +253,34 @@ function toLoadError(error: unknown): PdfLoadError {
   )
 }
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  onTimeout: () => void,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      onTimeout()
-      reject(
-        new PdfLoadError("timeout", "打开 PDF 超时，请重试。", {
-          retryable: true,
-        }),
-      )
-    }, timeoutMs)
-    promise.then(
-      (value) => {
-        window.clearTimeout(timer)
-        resolve(value)
-      },
-      (error: unknown) => {
-        window.clearTimeout(timer)
-        reject(error)
-      },
-    )
-  })
+/**
+ * 销毁 PDFDocumentLoadingTask。
+ *
+ * worker 已经终止时 destroy() 可能同步抛错或返回 rejected Promise，超时
+ * 路径必须吞掉这些错误，否则会以未处理异常打断错误界面渲染。
+ */
+function destroyLoadingTask(task: PDFDocumentLoadingTask | null): void {
+  if (task === null) {
+    return
+  }
+  try {
+    void task.destroy().catch(() => undefined)
+  } catch {
+    // worker 已退出时忽略销毁异常。
+  }
+}
+
+async function destroyLoadingTaskAndWait(
+  task: PDFDocumentLoadingTask | null,
+): Promise<void> {
+  if (task === null) {
+    return
+  }
+  try {
+    await task.destroy()
+  } catch {
+    // 同上：销毁失败不应覆盖真正的打开错误。
+  }
 }
 
 function formatPageText(page: number, pageCount: number): string {
@@ -324,6 +347,7 @@ export class PdfReaderEngine {
   #userRotation = 0
   #pdf: PDFDocumentProxy | null = null
   #loadingTask: PDFDocumentLoadingTask | null = null
+  #openWatchdog: PdfOpenWatchdog | null = null
   #transport: HttpPdfRangeTransport | null = null
   #pageCount = 0
   #currentPage = 1
@@ -343,7 +367,12 @@ export class PdfReaderEngine {
   #activeSearchIndex = -1
   #searchNavigationEpoch: number | null = null
   #outlinePromise: Promise<PdfOutlineEntry[]> | null = null
-  #outlineLoaded = false
+  /** 当前文档的目录是否已经渲染进内部面板；与“是否已调用 getOutline”解耦。 */
+  #outlineRendered = false
+  /** 目录解析的取消边界，卸载/超时/切换文档时中止。 */
+  #outlineAbort: AbortController | null = null
+  /** 内部面板本次打开对应的等待；关闭面板时中止。 */
+  #outlineRequest: AbortController | null = null
   #sourceUrl: URL | null = null
   #pageCache = new Map<number, PDFPageProxy>()
   #pageElements = new Map<number, HTMLElement>()
@@ -454,15 +483,21 @@ export class PdfReaderEngine {
     this.#mountedLayout = null
     this.#pageCount = 0
     this.#outlinePromise = null
-    this.#outlineLoaded = false
+    this.#outlineRendered = false
+    this.#outlineAbort?.abort()
+    this.#outlineAbort = null
+    this.#outlineRequest?.abort()
+    this.#outlineRequest = null
     this.#searchMatches = []
     this.#activeSearchIndex = -1
     this.#destinationHashes.clear()
     this.#transport?.abort()
     this.#transport = null
+    this.#openWatchdog?.dispose()
+    this.#openWatchdog = null
     const task = this.#loadingTask
     this.#loadingTask = null
-    void task?.destroy().catch(() => undefined)
+    destroyLoadingTask(task)
     const pdf = this.#pdf
     this.#pdf = null
     if (pdf !== null) {
@@ -791,18 +826,68 @@ export class PdfReaderEngine {
     return this.#searchMatches.map((match) => ({ ...match }))
   }
 
-  async getOutline(): Promise<PdfOutlineEntry[]> {
-    await this.#readyPromise
-    if (this.#pdf === null) {
-      return []
-    }
-    if (this.#outlinePromise === null) {
-      this.#outlinePromise = buildPdfOutline(this.#pdf).then((entries) => {
-        this.#outlineLoaded = true
-        return entries
+  /**
+   * 读取 PDF 内置目录。
+   *
+   * - 结果在同一文档内缓存，Shell 与引擎内部面板共享，不会重复请求 worker；
+   * - 有超时与取消边界，不会因为 PDF.js 无响应而永久 pending；
+   * - 调用方取消（关闭面板）只影响本次等待，不破坏缓存；
+   * - 超时或失败会清空缓存，下一次打开可以重试。
+   */
+  async getOutline(
+    options: PdfOutlineRequestOptions = {},
+  ): Promise<PdfOutlineEntry[]> {
+    const mountId = this.#mountId
+    const operation = (async (): Promise<PdfOutlineEntry[]> => {
+      await this.#readyPromise
+      if (mountId !== this.#mountId || this.#pdf === null) {
+        return []
+      }
+      return (
+        this.#outlinePromise ??
+        this.#beginOutlineLoad(this.#pdf, mountId)
+      )
+    })()
+    try {
+      return await withPdfOutlineDeadline(operation, {
+        timeoutMs: options.timeoutMs ?? OUTLINE_TIMEOUT_MS,
+        signal: options.signal,
       })
+    } catch (error) {
+      if (
+        error instanceof PdfOutlineTimeoutError &&
+        mountId === this.#mountId
+      ) {
+        // 超时后不再复用无响应的 promise，下次打开重新尝试。
+        if (this.#outlinePromise !== null) {
+          this.#outlineAbort?.abort()
+          this.#outlineAbort = null
+          this.#outlinePromise = null
+        }
+      }
+      throw error
     }
-    return this.#outlinePromise
+  }
+
+  #beginOutlineLoad(
+    pdf: PDFDocumentProxy,
+    mountId: number,
+  ): Promise<PdfOutlineEntry[]> {
+    this.#outlineAbort?.abort()
+    const controller = new AbortController()
+    this.#outlineAbort = controller
+    const load = buildPdfOutline(pdf, { signal: controller.signal })
+    this.#outlinePromise = load
+    // 失败/中止后清空缓存，避免下一次永久复用 rejected promise。
+    load.catch(() => {
+      if (this.#outlinePromise === load && mountId === this.#mountId) {
+        this.#outlinePromise = null
+      }
+      if (this.#outlineAbort === controller) {
+        this.#outlineAbort = null
+      }
+    })
+    return load
   }
 
   // 内部：DOM 与 UI
@@ -1005,15 +1090,17 @@ export class PdfReaderEngine {
   #buildOutlinePanel(): HTMLDivElement {
     const panel = createElement("div", "iread-pdf__outline")
     panel.hidden = true
+    panel.dataset.outlineState = "idle"
     const header = createElement("div", "iread-pdf__panel-header")
     const title = createElement("h2", "iread-pdf__panel-title", "PDF 内置目录")
     const close = createButton("关闭 PDF 目录", "关闭", "iread-pdf__button iread-pdf__button--quiet")
     close.addEventListener("click", () => {
-      panel.hidden = true
+      this.#closeOutlinePanel()
     })
     header.append(title, close)
-    const status = createElement("p", "iread-pdf__outline-status", "正在读取目录…")
+    const status = createElement("p", "iread-pdf__outline-status", "")
     status.setAttribute("role", "status")
+    status.setAttribute("aria-live", "polite")
     this.#outlineStatus = status
     const list = createElement("div", "iread-pdf__outline-list")
     this.#outlineList = list
@@ -1076,7 +1163,7 @@ export class PdfReaderEngine {
             event.preventDefault()
             event.stopPropagation()
             if (this.#searchPanel !== null) this.#searchPanel.hidden = true
-            if (this.#outlinePanel !== null) this.#outlinePanel.hidden = true
+            this.#closeOutlinePanel()
           }
         }
       },
@@ -1235,8 +1322,20 @@ export class PdfReaderEngine {
       iccUrl: `${PDFJS_ASSET_ROOT}iccs/`,
     } as Parameters<typeof getDocument>[0])
     this.#loadingTask = task
+    const timeoutMs = this.#options.timeoutMs ?? OPEN_TIMEOUT_MS
+    const watchdog = new PdfOpenWatchdog({
+      timeoutMs,
+      stallMs: Math.min(OPEN_STALL_TIMEOUT_MS, timeoutMs),
+      onTimeout: () => {
+        destroyLoadingTask(task)
+      },
+    })
+    this.#openWatchdog = watchdog
+    let opened = false
     task.onProgress = (progress: { loaded: number; total?: number }) => {
-      if (mountId !== this.#mountId) {
+      watchdog.progress(progress.loaded)
+      // 文档已经 ready 后，迟到的进度事件不得把 loading 重新显示出来。
+      if (opened || mountId !== this.#mountId || this.#pdf !== null) {
         return
       }
       const total =
@@ -1255,19 +1354,17 @@ export class PdfReaderEngine {
       this.#setLoadingText(`正在按需读取 PDF… ${percent}%`)
     }
 
-    const pdf = await withTimeout(
-      task.promise,
-      this.#options.timeoutMs ?? OPEN_TIMEOUT_MS,
-      () => {
-        void task.destroy().catch(() => undefined)
-      },
-    )
+    const pdf = await watchdog.wait(task.promise)
+    opened = true
+    if (this.#openWatchdog === watchdog) {
+      this.#openWatchdog = null
+    }
     if (mountId !== this.#mountId || signal.aborted) {
-      await task.destroy().catch(() => undefined)
+      await destroyLoadingTaskAndWait(task)
       return
     }
     if (!Number.isSafeInteger(pdf.numPages) || pdf.numPages < 1) {
-      await task.destroy().catch(() => undefined)
+      await destroyLoadingTaskAndWait(task)
       throw new PdfLoadError("empty_pdf", "这份 PDF 没有可显示的页面。", {
         retryable: false,
       })
@@ -1275,14 +1372,21 @@ export class PdfReaderEngine {
     this.#pdf = pdf
     this.#pageCount = pdf.numPages
     this.#currentPage = 1
-    if (this.#loading !== null) {
-      this.#loading.hidden = true
-    }
+    this.#outlinePromise = null
+    this.#outlineRendered = false
+    this.#outlineAbort?.abort()
+    this.#outlineAbort = null
+    this.#outlineRequest?.abort()
+    this.#outlineRequest = null
+    this.#clearOpenTransientState()
     if (this.#root !== null) {
       this.#root.dataset.pdfReady = "true"
       this.#root.dataset.pdfState = "ready"
       this.#root.dataset.pdfPageCount = String(this.#pageCount)
     }
+    this.#options.onOpenStateChange?.("ready", {
+      pageCount: this.#pageCount,
+    })
     this.#updateIndicator()
     this.#updateZoomIndicator()
     this.#rebuildLayoutDom()
@@ -1306,8 +1410,35 @@ export class PdfReaderEngine {
     }
   }
 
+  /**
+   * 打开或重试成功后清理所有临时状态：错误遮罩、错误码、loading 与
+   * 引擎内 notice，避免成功页面残留上一次失败的信息。
+   */
+  #clearOpenTransientState(): void {
+    this.#lastError = null
+    if (this.#root !== null) {
+      delete this.#root.dataset.errorCode
+    }
+    if (this.#errorOverlay !== null) {
+      this.#errorOverlay.hidden = true
+    }
+    if (this.#noticeTimer !== null) {
+      window.clearTimeout(this.#noticeTimer)
+      this.#noticeTimer = null
+    }
+    if (this.#notice !== null) {
+      this.#notice.textContent = ""
+    }
+    this.#setLoadingText("")
+  }
+
   #showFatalError(error: PdfLoadError, keepContent = false): void {
     this.#lastError = error
+    this.#options.onOpenStateChange?.("error", {
+      pageCount: this.#pageCount,
+    })
+    this.#openWatchdog?.dispose()
+    this.#openWatchdog = null
     if (this.#loading !== null) {
       this.#loading.hidden = true
     }
@@ -2274,7 +2405,7 @@ export class PdfReaderEngine {
       return
     }
     if (this.#outlinePanel !== null) {
-      this.#outlinePanel.hidden = true
+      this.#closeOutlinePanel()
     }
     panel.hidden = false
     this.#searchInput?.focus()
@@ -2408,17 +2539,71 @@ export class PdfReaderEngine {
       return
     }
     if (!panel.hidden) {
-      panel.hidden = true
+      this.#closeOutlinePanel()
       return
     }
     if (this.#searchPanel !== null) {
       this.#searchPanel.hidden = true
     }
     panel.hidden = false
-    if (!this.#outlineLoaded) {
-      const entries = await this.getOutline()
-      this.#renderOutline(entries)
-      this.#outlineLoaded = true
+    // 面板内容可能已经由上一次打开渲染；直接复用，不能停留在
+    // “正在读取目录…”的占位状态（Shell 预加载只缓存结果，不负责渲染面板）。
+    if (this.#outlineRendered) {
+      return
+    }
+    const mountId = this.#mountId
+    const controller = new AbortController()
+    this.#outlineRequest?.abort()
+    this.#outlineRequest = controller
+    this.#setOutlineState("loading", "正在读取目录…")
+    let entries: PdfOutlineEntry[] = []
+    let failed = false
+    try {
+      entries = await this.getOutline({ signal: controller.signal })
+    } catch {
+      if (controller.signal.aborted) {
+        return
+      }
+      failed = true
+    } finally {
+      if (this.#outlineRequest === controller) {
+        this.#outlineRequest = null
+      }
+    }
+    // 迟到响应不得覆盖已关闭的面板或新文档。
+    if (
+      controller.signal.aborted ||
+      mountId !== this.#mountId ||
+      panel.hidden
+    ) {
+      return
+    }
+    this.#renderOutline(entries)
+    if (failed) {
+      // 失败与“没有目录”使用同一句提示，但保留状态标记便于诊断/测试。
+      panel.dataset.outlineState = "error"
+    }
+    // 失败时不锁定，重新打开面板可以再试一次。
+    this.#outlineRendered = !failed
+  }
+
+  #closeOutlinePanel(): void {
+    if (this.#outlinePanel !== null) {
+      this.#outlinePanel.hidden = true
+    }
+    this.#outlineRequest?.abort()
+    this.#outlineRequest = null
+  }
+
+  #setOutlineState(
+    state: "idle" | "loading" | "ready" | "empty" | "error",
+    text?: string,
+  ): void {
+    if (this.#outlinePanel !== null) {
+      this.#outlinePanel.dataset.outlineState = state
+    }
+    if (this.#outlineStatus !== null && text !== undefined) {
+      this.#outlineStatus.textContent = text
     }
   }
 
@@ -2429,14 +2614,13 @@ export class PdfReaderEngine {
     }
     list.replaceChildren()
     if (entries.length === 0) {
-      if (this.#outlineStatus !== null) {
-        this.#outlineStatus.textContent = "这份 PDF 没有内置目录。"
-      }
+      this.#setOutlineState("empty", "这份 PDF 没有内置目录。")
       return
     }
-    if (this.#outlineStatus !== null) {
-      this.#outlineStatus.textContent = `共 ${countOutlineEntries(entries)} 个目录项。`
-    }
+    this.#setOutlineState(
+      "ready",
+      `共 ${countOutlineEntries(entries)} 个目录项。`,
+    )
     const renderLevel = (
       values: PdfOutlineEntry[],
       container: HTMLElement,

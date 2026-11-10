@@ -662,6 +662,283 @@ async function main() {
     assert.equal(l1Result.released, true)
     assert.ok(l1Result.mobileL1 > 0)
 
+    logStep("L3 预算：增量账本、写入节流、读取 lastAccess 节流与 LRU")
+    const budgetResult = await evaluate(page, async () => {
+      const {
+        PDF_CHUNK_SIZE,
+        ReaderPersistentCache,
+      } = await import("/src/features/reader/cache/persistent-cache.ts")
+      const {
+        pdfRangeKey,
+      } = await import("/src/features/reader/cache/resource-key.ts")
+      const fileVersion = "b".repeat(64)
+      const deleteDb = (name) =>
+        new Promise((resolve) => {
+          const request = indexedDB.deleteDatabase(name)
+          request.onsuccess = () => resolve()
+          request.onerror = () => resolve()
+          request.onblocked = () => resolve()
+        })
+      const writeChunk = (cache, generation, bookId, index, total) => {
+        const start = index * PDF_CHUNK_SIZE
+        const end = start + PDF_CHUNK_SIZE - 1
+        return cache.writePdfChunk({
+          key: pdfRangeKey(bookId, fileVersion, start, end),
+          range: { start, end },
+          bytes: new Uint8Array(PDF_CHUNK_SIZE),
+          status: 206,
+          totalBytes: total * PDF_CHUNK_SIZE,
+          contentType: "application/pdf",
+          etag: "budget",
+          generation,
+        })
+      }
+      const readChunk = (cache, bookId, index) => {
+        const start = index * PDF_CHUNK_SIZE
+        return cache.readPdfChunk(
+          pdfRangeKey(
+            bookId,
+            fileVersion,
+            start,
+            start + PDF_CHUNK_SIZE - 1,
+          ),
+        )
+      }
+
+      const counters = { getAll: {}, put: {} }
+      const originalGetAll = IDBObjectStore.prototype.getAll
+      const originalPut = IDBObjectStore.prototype.put
+      IDBObjectStore.prototype.getAll = function patchedGetAll(...args) {
+        counters.getAll[this.name] =
+          (counters.getAll[this.name] ?? 0) + 1
+        return originalGetAll.apply(this, args)
+      }
+      IDBObjectStore.prototype.put = function patchedPut(...args) {
+        counters.put[this.name] = (counters.put[this.name] ?? 0) + 1
+        return originalPut.apply(this, args)
+      }
+      const resetCounters = () => {
+        for (const map of Object.values(counters)) {
+          for (const key of Object.keys(map)) {
+            delete map[key]
+          }
+        }
+      }
+      const snapshot = () => JSON.parse(JSON.stringify(counters))
+
+      const clock = { value: 1_000_000 }
+      const mainDb = "iread-reader-cache-budget-main"
+      const evictDb = "iread-reader-cache-budget-evict"
+      const lruDb = "iread-reader-cache-budget-lru"
+      const generationDb = "iread-reader-cache-budget-generation"
+      const databaseNames = [mainDb, evictDb, lruDb, generationDb]
+      for (const name of databaseNames) {
+        await deleteDb(name)
+      }
+
+      const main = new ReaderPersistentCache({
+        tier: "mobile",
+        dbName: mainDb,
+        now: () => clock.value,
+      })
+      const evict = new ReaderPersistentCache({
+        tier: "mobile",
+        dbName: evictDb,
+        now: () => clock.value,
+        budget: {
+          maxBytes: 5 * PDF_CHUNK_SIZE,
+          maxEntries: 100,
+          maxAgeMs: 60_000,
+        },
+      })
+      const lru = new ReaderPersistentCache({
+        tier: "mobile",
+        dbName: lruDb,
+        now: () => clock.value,
+        budget: {
+          maxBytes: 100 * PDF_CHUNK_SIZE,
+          maxEntries: 3,
+          maxAgeMs: 60_000,
+        },
+      })
+      const generationCache = new ReaderPersistentCache({
+        tier: "mobile",
+        dbName: generationDb,
+        now: () => clock.value,
+      })
+
+      try {
+        await main.open()
+        const mainGeneration = await main.currentGeneration()
+        const writeStart = performance.now()
+        for (let index = 0; index < 200; index += 1) {
+          clock.value += 10
+          const result = await writeChunk(
+            main,
+            mainGeneration,
+            "budget-main",
+            index,
+            200,
+          )
+          if (!result.stored) {
+            throw new Error(`写入第 ${index} 块失败`)
+          }
+        }
+        const writeMs = performance.now() - writeStart
+        const writeCounters = snapshot()
+
+        resetCounters()
+        for (let index = 0; index < 50; index += 1) {
+          clock.value += 1
+          const entry = await readChunk(main, "budget-main", index)
+          if (entry === null) {
+            throw new Error(`读取第 ${index} 块未命中`)
+          }
+        }
+        const readCounters = snapshot()
+
+        await evict.open()
+        const evictGeneration = await evict.currentGeneration()
+        for (let index = 0; index < 8; index += 1) {
+          clock.value += 10
+          const result = await writeChunk(
+            evict,
+            evictGeneration,
+            "budget-evict",
+            index,
+            8,
+          )
+          if (!result.stored) {
+            throw new Error(`淘汰写入第 ${index} 块失败`)
+          }
+        }
+        const evictUsage = await evict.usage()
+        const evictedFirst = await readChunk(evict, "budget-evict", 0)
+        const keptLast = await readChunk(evict, "budget-evict", 7)
+
+        await lru.open()
+        const lruGeneration = await lru.currentGeneration()
+        for (let index = 0; index < 3; index += 1) {
+          clock.value += 10
+          const result = await writeChunk(
+            lru,
+            lruGeneration,
+            "budget-lru",
+            index,
+            4,
+          )
+          if (!result.stored) {
+            throw new Error(`LRU 写入第 ${index} 块失败`)
+          }
+        }
+        clock.value += 10
+        const lruTouched = await readChunk(lru, "budget-lru", 0)
+        clock.value += 10
+        const lruFourth = await writeChunk(
+          lru,
+          lruGeneration,
+          "budget-lru",
+          3,
+          4,
+        )
+        const lruUsage = await lru.usage()
+        const lruKeptTouched = await readChunk(lru, "budget-lru", 0)
+        const lruEvicted = await readChunk(lru, "budget-lru", 1)
+        const lruKeptNew = await readChunk(lru, "budget-lru", 3)
+        clock.value += 120_000
+        const lruExpired = await lru.usage()
+
+        await generationCache.open()
+        const staleGeneration =
+          await generationCache.currentGeneration()
+        const firstWrite = await writeChunk(
+          generationCache,
+          staleGeneration,
+          "budget-generation",
+          0,
+          1,
+        )
+        const advanced = await generationCache.advanceGeneration()
+        const staleRead = await readChunk(
+          generationCache,
+          "budget-generation",
+          0,
+        )
+        const staleWrite = await writeChunk(
+          generationCache,
+          staleGeneration,
+          "budget-generation",
+          1,
+          2,
+        )
+
+        return {
+          writeMs,
+          chunkSize: PDF_CHUNK_SIZE,
+          writeCounters,
+          readCounters,
+          evictUsage: evictUsage.pdfChunks,
+          evictedFirst: evictedFirst === null,
+          keptLast: keptLast !== null,
+          lruTouched: lruTouched !== null,
+          lruFourth,
+          lruUsage: lruUsage.pdfChunks,
+          lruKeptTouched: lruKeptTouched !== null,
+          lruEvicted: lruEvicted === null,
+          lruKeptNew: lruKeptNew !== null,
+          lruExpired: lruExpired.pdfChunks,
+          firstWrite,
+          advanced,
+          staleGeneration,
+          staleRead,
+          staleWrite,
+        }
+      } finally {
+        IDBObjectStore.prototype.getAll = originalGetAll
+        IDBObjectStore.prototype.put = originalPut
+        main.close()
+        evict.close()
+        lru.close()
+        generationCache.close()
+        for (const name of databaseNames) {
+          await deleteDb(name)
+        }
+      }
+    })
+    assert.deepEqual(budgetResult.writeCounters.getAll, {
+      contentMeta: 1,
+      pdfChunks: 1,
+      manifests: 1,
+    })
+    assert.equal(budgetResult.readCounters.put.pdfChunks, undefined)
+    assert.equal(budgetResult.evictUsage.entries, 5)
+    assert.equal(
+      budgetResult.evictUsage.bytes,
+      5 * budgetResult.chunkSize,
+    )
+    assert.equal(budgetResult.evictedFirst, true)
+    assert.equal(budgetResult.keptLast, true)
+    assert.equal(budgetResult.lruTouched, true)
+    assert.equal(budgetResult.lruFourth.stored, true)
+    assert.equal(budgetResult.lruUsage.entries, 3)
+    assert.equal(budgetResult.lruKeptTouched, true)
+    assert.equal(budgetResult.lruEvicted, true)
+    assert.equal(budgetResult.lruKeptNew, true)
+    assert.equal(budgetResult.lruExpired.entries, 0)
+    assert.equal(budgetResult.firstWrite.stored, true)
+    assert.equal(
+      budgetResult.advanced,
+      budgetResult.staleGeneration + 1,
+    )
+    assert.equal(budgetResult.staleRead, null)
+    assert.equal(budgetResult.staleWrite.stored, false)
+    assert.equal(budgetResult.staleWrite.reason, "stale-generation")
+    console.log(
+      `[E2E] 200 块写入 ${Math.round(budgetResult.writeMs)}ms，` +
+        `getAll=${JSON.stringify(budgetResult.writeCounters.getAll)}，` +
+        `读取 put=${JSON.stringify(budgetResult.readCounters.put)}`,
+    )
+
     logStep("L3 过期：usage 会清理超过层预算时间的条目")
     const ttlResult = await evaluate(page, async () => {
       const {

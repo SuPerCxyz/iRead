@@ -24,6 +24,7 @@ import {
   createAuthenticatedStorageState,
   ensureAdmin,
 } from "./auth-helpers.mjs"
+import { assertReaderToolbarLayout } from "./reader-toolbar-layout.mjs"
 
 const WEB_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
 const REPO_ROOT = path.resolve(WEB_ROOT, "..")
@@ -37,6 +38,8 @@ const SCREENSHOT_DIR =
 const TEMP_ROOT = process.env.IREAD_E2E_TMP ?? "/tmp/opencode"
 const PAGE_COUNT = 12
 const PDF_PADDING_LINES = 420
+const LONG_PDF_TITLE =
+  "性能之巅 系统、企业与云可观测性（第2版） (Brendan Gregg) (z-library.sk, 1lib.sk, z-lib.sk) 超长书名用于验证阅读器顶栏单行省略与右侧图标不被挤压"
 
 function logStep(name) {
   console.log(`\n[PDF-SHELL-E2E] ${name}`)
@@ -53,8 +56,17 @@ function escapePdfText(value) {
 /**
  * 生成真实多页 PDF：包含可搜索文字、两章内置目录与页内链接，并在对象前
  * 写入约 420KB 注释填充，确保远跳必须通过真实 Range 而不是整本下载。
+ *
+ * 目录回归用例可传 `outlines: false` 生成无目录 PDF；857 页样本关掉
+ * 页内填充以控制生成/上传时间。
  */
-function buildPdf({ encrypted = false } = {}) {
+function buildPdf({
+  encrypted = false,
+  pageCount = PAGE_COUNT,
+  outlines = true,
+  paddingLines = PDF_PADDING_LINES,
+  pagePaddingLines = 40,
+} = {}) {
   const ids = {
     catalog: 1,
     pages: 2,
@@ -67,7 +79,7 @@ function buildPdf({ encrypted = false } = {}) {
   const pageId = (page) => 10 + page
   const contentId = (page) => 30 + page
   let body = "%PDF-1.4\n"
-  for (let line = 0; line < PDF_PADDING_LINES; line += 1) {
+  for (let line = 0; line < paddingLines; line += 1) {
     body += `%${"padding-".repeat(125)}\n`
   }
   const offsets = new Map()
@@ -78,27 +90,34 @@ function buildPdf({ encrypted = false } = {}) {
   }
 
   const kids = []
-  for (let page = 1; page <= PAGE_COUNT; page += 1) {
+  for (let page = 1; page <= pageCount; page += 1) {
     kids.push(`${pageId(page)} 0 R`)
   }
 
   writeObject(
     ids.catalog,
-    `<< /Type /Catalog /Pages ${ids.pages} 0 R /Outlines ${ids.outlineRoot} 0 R /PageMode /UseOutlines >>`,
+    `<< /Type /Catalog /Pages ${ids.pages} 0 R${
+      outlines
+        ? ` /Outlines ${ids.outlineRoot} 0 R /PageMode /UseOutlines`
+        : ""
+    } >>`,
   )
   writeObject(
     ids.pages,
-    `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${PAGE_COUNT} /Resources << /Font << /F1 ${ids.font} 0 R >> >> >>`,
+    `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pageCount} /Resources << /Font << /F1 ${ids.font} 0 R >> >> >>`,
   )
   writeObject(
     ids.font,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   )
 
-  for (let page = 1; page <= PAGE_COUNT; page += 1) {
+  for (let page = 1; page <= pageCount; page += 1) {
     const text = escapePdfText(`iRead PDF page ${page} searchable keyword`)
     const content = [
-      ...Array.from({ length: 40 }, () => `%${"page-padding-".repeat(84)}`),
+      ...Array.from(
+        { length: pagePaddingLines },
+        () => `%${"page-padding-".repeat(84)}`,
+      ),
       "BT",
       "/F1 22 Tf",
       "72 720 Td",
@@ -108,7 +127,7 @@ function buildPdf({ encrypted = false } = {}) {
       "ET",
     ].join("\n")
     const annotation =
-      page === 1
+      page === 1 && pageCount >= 3
         ? ` /Annots [<< /Type /Annot /Subtype /Link /Rect [72 690 430 725] /Border [0 0 0] /Dest [${pageId(3)} 0 R /XYZ 0 740 null] >>]`
         : ""
     writeObject(
@@ -121,18 +140,20 @@ function buildPdf({ encrypted = false } = {}) {
     )
   }
 
-  writeObject(
-    ids.outlineRoot,
-    `<< /Type /Outlines /First ${ids.outlineOne} 0 R /Last ${ids.outlineTwo} 0 R /Count 2 >>`,
-  )
-  writeObject(
-    ids.outlineOne,
-    `<< /Title (Chapter One) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(1)} 0 R /XYZ 0 792 null] /Next ${ids.outlineTwo} 0 R >>`,
-  )
-  writeObject(
-    ids.outlineTwo,
-    `<< /Title (Chapter Two) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(3)} 0 R /XYZ 0 792 null] >>`,
-  )
+  if (outlines) {
+    writeObject(
+      ids.outlineRoot,
+      `<< /Type /Outlines /First ${ids.outlineOne} 0 R /Last ${ids.outlineTwo} 0 R /Count 2 >>`,
+    )
+    writeObject(
+      ids.outlineOne,
+      `<< /Title (Chapter One) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(1)} 0 R /XYZ 0 792 null] /Next ${ids.outlineTwo} 0 R >>`,
+    )
+    writeObject(
+      ids.outlineTwo,
+      `<< /Title (Chapter Two) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(3)} 0 R /XYZ 0 792 null] >>`,
+    )
+  }
   if (encrypted) {
     writeObject(
       ids.encrypt,
@@ -140,7 +161,11 @@ function buildPdf({ encrypted = false } = {}) {
     )
   }
 
-  const maxId = encrypted ? ids.encrypt : ids.outlineTwo
+  const maxId = encrypted
+    ? ids.encrypt
+    : outlines
+      ? ids.outlineTwo
+      : Math.max(ids.font, pageId(pageCount), contentId(pageCount))
   const xrefOffset = Buffer.byteLength(body)
   body += `xref\n0 ${maxId + 1}\n0000000000 65535 f \n`
   for (let id = 1; id <= maxId; id += 1) {
@@ -371,7 +396,12 @@ async function waitForTaskTerminal(api, taskId) {
   throw new Error(`索引任务未在 90 秒内进入终态：${JSON.stringify(last)}`)
 }
 
-async function uploadPdf(api, data, fileName, { readable = true } = {}) {
+async function uploadPdf(
+  api,
+  data,
+  fileName,
+  { readable = true, expectedPageCount = PAGE_COUNT } = {},
+) {
   const intent = await api.post("/api/v1/uploads", {
     clientUploadId: randomUUID(),
     fileName,
@@ -451,7 +481,7 @@ async function uploadPdf(api, data, fileName, { readable = true } = {}) {
   const manifest = manifestResponse.payload?.data
   assert.equal(manifest?.format, "pdf")
   assert.equal(manifest?.readingCapabilities?.canRead, true)
-  assert.equal(manifest?.formatData?.pageCount, PAGE_COUNT)
+  assert.equal(manifest?.formatData?.pageCount, expectedPageCount)
   assert.equal(typeof manifest?.formatData?.etag, "string")
   return { bookId, detail, manifest, task }
 }
@@ -472,6 +502,34 @@ async function waitForPage(page, pageNumber, timeout = 20_000) {
       return Number(root?.getAttribute("data-pdf-page")) === target
     },
     pageNumber,
+    { timeout },
+  )
+}
+
+async function waitForPdfPageCount(page, pageCount, timeout = 60_000) {
+  await page.waitForFunction(
+    (expected) =>
+      Number(
+        document.querySelector(".iread-pdf")?.getAttribute("data-pdf-page-count"),
+      ) === expected,
+    pageCount,
+    { timeout },
+  )
+}
+
+/** 等待引擎内部目录面板结束 loading 并显示指定提示。 */
+async function waitForEngineOutlineStatus(page, expected, timeout = 15_000) {
+  await page.waitForFunction(
+    (text) => {
+      const panel = document.querySelector(".iread-pdf__outline")
+      const status = document.querySelector(".iread-pdf__outline-status")
+      return (
+        panel !== null &&
+        panel.hidden === false &&
+        status?.textContent === text
+      )
+    },
+    expected,
     { timeout },
   )
 }
@@ -576,7 +634,7 @@ async function main() {
     const uploaded = await uploadPdf(
       adminApi,
       readablePdf,
-      `shell-pdf-readable-${Date.now()}.pdf`,
+      `${LONG_PDF_TITLE}.pdf`,
     )
     console.log(
       `[E2E] bookId=${uploaded.bookId}，PDF=${readablePdf.byteLength} 字节，页数=${uploaded.manifest.formatData.pageCount}，task=${uploaded.task?.state}`,
@@ -600,6 +658,37 @@ async function main() {
       "pdf_encrypted",
     )
     console.log(`[E2E] 加密 PDF manifest 409：${JSON.stringify(encrypted.blockedManifest.payload?.error)}`)
+
+    logStep("上传 1 页无目录与 857 页无目录 PDF（目录卡死回归）")
+    const noOutlinePdf = buildPdf({
+      pageCount: 1,
+      outlines: false,
+      paddingLines: 0,
+      pagePaddingLines: 0,
+    })
+    const noOutline = await uploadPdf(
+      adminApi,
+      noOutlinePdf,
+      `shell-pdf-no-outline-${Date.now()}.pdf`,
+      { expectedPageCount: 1 },
+    )
+    const manyPagesPdf = buildPdf({
+      pageCount: 857,
+      outlines: false,
+      paddingLines: 0,
+      pagePaddingLines: 0,
+    })
+    const manyPages = await uploadPdf(
+      adminApi,
+      manyPagesPdf,
+      `shell-pdf-857-${Date.now()}.pdf`,
+      { expectedPageCount: 857 },
+    )
+    assert.equal(noOutline.manifest.formatData.pageCount, 1)
+    assert.equal(manyPages.manifest.formatData.pageCount, 857)
+    console.log(
+      `[E2E] 无目录样本：1 页 bookId=${noOutline.bookId}，857 页 bookId=${manyPages.bookId}`,
+    )
 
     const desktopContext = await browser.newContext({
       baseURL: webBase,
@@ -660,6 +749,9 @@ async function main() {
       waitUntil: "domcontentloaded",
     })
     await waitForPdfReady(page)
+    await page
+      .getByRole("heading", { level: 1, name: LONG_PDF_TITLE })
+      .waitFor({ timeout: 20_000 })
     const readyRoot = page.locator(".iread-pdf")
     await page.waitForFunction(
       () =>
@@ -930,6 +1022,15 @@ async function main() {
       `[E2E] Range 请求 ${rangeRequests.length} 次；首次打开 ${downloaded} 字节，重开恢复 ${restoredDownloaded} 字节，整本 ${readablePdf.byteLength} 字节`,
     )
 
+    logStep("顶栏 1920/1440/1024/768/390：单行对齐、长书名省略与操作区完整")
+    await assertReaderToolbarLayout(page, {
+      label: "PDF 阅读器顶栏",
+      expectEllipsis: () => true,
+    })
+    await page.screenshot({
+      path: path.join(SCREENSHOT_DIR, "desktop-pdf-toolbar-long-title.png"),
+    })
+
     logStep("内容 409：Shell 内显示 PDF 原件已更新")
     const conflictPage = await desktopContext.newPage()
     await conflictPage.route("**/content", async (route) => {
@@ -964,6 +1065,112 @@ async function main() {
       path: path.join(SCREENSHOT_DIR, "desktop-pdf-409.png"),
     })
     await conflictPage.close()
+
+    logStep("重试打开：失败后重试成功，错误/loading/底部 notice 全部清除")
+    const retryPage = await desktopContext.newPage()
+    let failContent = true
+    await retryPage.route("**/content", async (route) => {
+      if (failContent) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "storage_unavailable",
+              message: "temporary",
+              requestId: "",
+              details: {},
+            },
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+    await retryPage.goto(`/read/${encodeURIComponent(uploaded.bookId)}`, {
+      waitUntil: "domcontentloaded",
+    })
+    await retryPage
+      .locator('.iread-pdf[data-pdf-state="error"]')
+      .waitFor({ timeout: 20_000 })
+    await retryPage
+      .locator('.iread-pdf__error:not([hidden])')
+      .waitFor({ timeout: 10_000 })
+    assert.equal(
+      await retryPage.locator('.iread-pdf__loading:not([hidden])').count(),
+      0,
+      "失败后 loading 必须隐藏",
+    )
+    failContent = false
+    await retryPage.getByRole("button", { name: "重试打开 PDF" }).click()
+    await retryPage
+      .locator('.iread-pdf[data-pdf-ready="true"]')
+      .waitFor({ timeout: 30_000 })
+    await retryPage
+      .locator('.iread-pdf__page[data-pdf-page="1"][data-state="ready"] canvas')
+      .waitFor({ timeout: 30_000 })
+    const retryRoot = retryPage.locator(".iread-pdf")
+    assert.equal(
+      await retryRoot.getAttribute("data-pdf-state"),
+      "ready",
+      "重试成功后状态必须回到 ready",
+    )
+    assert.equal(
+      await retryRoot.getAttribute("data-error-code"),
+      null,
+      "重试成功后不得残留错误码",
+    )
+    assert.equal(
+      Number(await retryRoot.getAttribute("data-pdf-page-count")),
+      PAGE_COUNT,
+    )
+    assert.equal(
+      await retryPage.locator('.iread-pdf__error:not([hidden])').count(),
+      0,
+      "重试成功后错误遮罩必须隐藏",
+    )
+    assert.equal(
+      await retryPage.locator('.iread-pdf__loading:not([hidden])').count(),
+      0,
+      "重试成功后 loading 必须隐藏",
+    )
+    assert.equal(
+      (await retryPage.locator(".iread-pdf__notice").innerText()).trim(),
+      "",
+      "重试成功后引擎 notice 必须清空",
+    )
+    assert.equal(
+      await retryPage.locator(".iread-reader-shell__notice").count(),
+      0,
+      "重试成功后底部 notice 必须清空",
+    )
+    assert.equal(
+      await retryPage.locator(".iread-reader-shell__engine-hint").count(),
+      0,
+      "重试成功后 Shell 必须恢复翻页/跳页能力",
+    )
+    assert.equal(
+      await retryPage.locator("#reader-jump-page").isEnabled(),
+      true,
+      "重试成功后页码输入必须可用",
+    )
+    assert.equal(
+      await retryPage.locator("[data-reader-page-next]").isEnabled(),
+      true,
+      "重试成功后下一页按钮必须可用",
+    )
+    assert.match(
+      (await retryPage
+        .locator(".iread-reader-shell__position-text")
+        .first()
+        .innerText()) ?? "",
+      new RegExp(`第 1 / ${PAGE_COUNT} 页`),
+      "重试成功后 Shell 位置必须显示真实页数",
+    )
+    await retryPage.screenshot({
+      path: path.join(SCREENSHOT_DIR, "desktop-pdf-retry-recovered.png"),
+    })
+    await retryPage.close()
 
     logStep("加密 PDF：/read 显示 manifest 409 错误，不启动 PDF 引擎")
     const encryptedPage = await desktopContext.newPage()
@@ -1104,6 +1311,184 @@ async function main() {
       path: path.join(SCREENSHOT_DIR, "desktop-pdf-final.png"),
     })
 
+    logStep("PDF 目录回归：Shell 预加载后内部面板不得卡在“正在读取目录…”")
+    const globalSettings = await adminApi.get("/api/v1/settings/reader")
+    assert.equal(globalSettings.status, 200)
+    const basePdfSettings = globalSettings.payload?.data?.value?.pdf ?? {}
+    const showToolbar = await adminApi.put("/api/v1/settings/reader", {
+      schemaVersion: 1,
+      baseRevision: globalSettings.payload?.data?.revision ?? "0",
+      value: { pdf: { ...basePdfSettings, toolbarVisible: true } },
+    })
+    assert.equal(
+      showToolbar.status,
+      200,
+      `显示 PDF 引擎工具栏失败：${JSON.stringify(showToolbar.payload)}`,
+    )
+
+    const outlineContext = await browser.newContext({
+      baseURL: webBase,
+      viewport: { width: 1440, height: 900 },
+      locale: "zh-CN",
+      serviceWorkers: "block",
+      storageState,
+    })
+    contexts.push(outlineContext)
+    const outlinePage = await outlineContext.newPage()
+    const outlinePageErrors = []
+    outlinePage.on("pageerror", (error) => {
+      outlinePageErrors.push(error.message)
+    })
+    const shellToc = outlinePage.locator('[data-reader-panel="toc"]')
+    const engineToc = outlinePage.locator(".iread-pdf__outline")
+    const engineTocStatus = outlinePage.locator(".iread-pdf__outline-status")
+    const openShellToc = async () => {
+      await outlinePage.getByRole("button", { name: "目录与书签" }).click()
+      await shellToc.waitFor({ timeout: 5_000 })
+    }
+    const closeShellToc = async () => {
+      await shellToc.getByRole("button", { name: "关闭面板" }).click()
+      await shellToc.waitFor({ state: "hidden" })
+    }
+    const openEngineToc = async () => {
+      await outlinePage
+        .getByRole("button", { name: "PDF 内置目录" })
+        .click()
+      await engineToc.waitFor({ timeout: 5_000 })
+    }
+    const closeEngineToc = async () => {
+      await outlinePage.getByRole("button", { name: "关闭 PDF 目录" }).click()
+      await engineToc.waitFor({ state: "hidden" })
+    }
+    const waitForPdfRoot = async (bookId, pageCount) => {
+      await outlinePage.goto(`/read/${encodeURIComponent(bookId)}`, {
+        waitUntil: "domcontentloaded",
+      })
+      await outlinePage
+        .locator('.iread-pdf[data-pdf-ready="true"]')
+        .waitFor({ timeout: 60_000 })
+      await waitForPdfPageCount(outlinePage, pageCount)
+      assert.equal(
+        await outlinePage.locator(".iread-pdf").getAttribute("data-toolbar"),
+        "visible",
+        "内部目录回归需要引擎工具栏可见",
+      )
+    }
+
+    // 1 页无目录：Shell 先读取目录（旧代码会在这里把内部面板的 loading 永久锁死）。
+    await waitForPdfRoot(noOutline.bookId, 1)
+    await openShellToc()
+    await shellToc
+      .getByText("这份 PDF 没有内置目录。", { exact: true })
+      .waitFor({ timeout: 15_000 })
+    await closeShellToc()
+
+    const noOutlineStartedAt = Date.now()
+    await openEngineToc()
+    await waitForEngineOutlineStatus(
+      outlinePage,
+      "这份 PDF 没有内置目录。",
+      15_000,
+    )
+    const noOutlineSettleMs = Date.now() - noOutlineStartedAt
+    assert.equal(
+      await engineToc.getAttribute("data-outline-state"),
+      "empty",
+      "无目录 PDF 的内部面板必须进入 empty 终态",
+    )
+    assert.ok(
+      noOutlineSettleMs < 15_000,
+      `内部目录不得长期 loading，实际 ${noOutlineSettleMs}ms`,
+    )
+    await closeEngineToc()
+
+    // 关闭后重开仍直接复用结果，不回到 loading。
+    await openEngineToc()
+    assert.equal(
+      await engineTocStatus.textContent(),
+      "这份 PDF 没有内置目录。",
+    )
+    await closeEngineToc()
+
+    // 857 页无目录：同样快速结束，不因页数卡死。
+    await waitForPdfRoot(manyPages.bookId, 857)
+    await openShellToc()
+    await shellToc
+      .getByText("这份 PDF 没有内置目录。", { exact: true })
+      .waitFor({ timeout: 20_000 })
+    await closeShellToc()
+    const manyPagesStartedAt = Date.now()
+    await openEngineToc()
+    await waitForEngineOutlineStatus(
+      outlinePage,
+      "这份 PDF 没有内置目录。",
+      15_000,
+    )
+    const manyPagesSettleMs = Date.now() - manyPagesStartedAt
+    assert.ok(
+      manyPagesSettleMs < 15_000,
+      `857 页 PDF 内部目录不得长期 loading，实际 ${manyPagesSettleMs}ms`,
+    )
+
+    // 目录加载中立即切书：迟到结果不得覆盖新文档。
+    await outlinePage.goto(
+      `/read/${encodeURIComponent(uploaded.bookId)}`,
+      { waitUntil: "domcontentloaded" },
+    )
+    await outlinePage
+      .locator('.iread-pdf[data-pdf-ready="true"]')
+      .waitFor({ timeout: 60_000 })
+    await waitForPdfPageCount(outlinePage, PAGE_COUNT)
+    await openShellToc()
+    await shellToc
+      .getByText("Chapter One", { exact: true })
+      .waitFor({ timeout: 15_000 })
+    await closeShellToc()
+
+    await openEngineToc()
+    await outlinePage
+      .getByRole("button", { name: "跳转到目录：Chapter One" })
+      .waitFor({ timeout: 15_000 })
+    assert.equal(
+      await engineToc.getAttribute("data-outline-state"),
+      "ready",
+      "有目录 PDF 的内部面板必须进入 ready 终态",
+    )
+    assert.equal(
+      await engineTocStatus.textContent(),
+      "共 2 个目录项。",
+      "857 页文档的迟到空目录结果不得覆盖新文档",
+    )
+
+    // 打开后立刻关闭，再打开仍能正常渲染。
+    await outlinePage.getByRole("button", { name: "关闭 PDF 目录" }).click()
+    await engineToc.waitFor({ state: "hidden" })
+    await outlinePage.waitForTimeout(300)
+    assert.equal(await engineToc.isHidden(), true)
+    await openEngineToc()
+    await outlinePage
+      .getByRole("button", { name: "跳转到目录：Chapter One" })
+      .waitFor({ timeout: 15_000 })
+    await closeEngineToc()
+
+    assert.deepEqual(outlinePageErrors, [], "目录交互不得产生页面异常")
+
+    const restoreSettings = await adminApi.get("/api/v1/settings/reader")
+    const restoreToolbar = await adminApi.put("/api/v1/settings/reader", {
+      schemaVersion: 1,
+      baseRevision: restoreSettings.payload?.data?.revision ?? "0",
+      value: { pdf: { ...basePdfSettings, toolbarVisible: false } },
+    })
+    assert.equal(
+      restoreToolbar.status,
+      200,
+      `恢复 PDF 引擎工具栏设置失败：${JSON.stringify(restoreToolbar.payload)}`,
+    )
+    await outlinePage.screenshot({
+      path: path.join(SCREENSHOT_DIR, "desktop-pdf-outline-regression.png"),
+    })
+    await outlineContext.close()
+
     logStep("手机 390x844：Drawer 搜索/目录、PDF 设置与跳页")
     const mobileContext = await browser.newContext({
       baseURL: webBase,
@@ -1159,6 +1544,26 @@ async function main() {
       await mobile.getByRole("tab", { name: "EPUB 文字" }).count(),
       0,
       "PDF 设置不得显示文字/行高控件",
+    )
+    const mobileManualScale = mobile.getByRole("slider", { name: "手动缩放" })
+    await mobileManualScale.waitFor({ timeout: 5_000 })
+    assert.equal(
+      await mobileManualScale.getAttribute("aria-valuenow"),
+      "120",
+      "阅读器内手动缩放必须显示 120%，不得出现 10000%",
+    )
+    assert.equal(await mobileManualScale.getAttribute("aria-valuemin"), "25")
+    assert.equal(await mobileManualScale.getAttribute("aria-valuemax"), "400")
+    const mobileManualScaleField = mobile
+      .locator(".iread-reader-settings__field")
+      .filter({ hasText: "手动缩放" })
+    assert.equal(
+      (await mobileManualScaleField.locator(".iread-reader-settings__value").innerText()).trim(),
+      "120%",
+    )
+    assert.ok(
+      !(await mobileManualScaleField.innerText()).includes("10000"),
+      "阅读器内 PDF 设置不得显示 10000%",
     )
     await mobile.screenshot({
       path: path.join(SCREENSHOT_DIR, "mobile-pdf-settings.png"),
