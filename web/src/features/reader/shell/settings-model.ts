@@ -242,7 +242,8 @@ export const READER_SETTING_GROUPS: ReaderSettingGroup[] = [
         label: "手动缩放",
         description: "切回适应模式时保留此比例，但不把测量结果写回。",
         control: "slider",
-        defaultValue: 100,
+        // 存储值是 0.25–4 的比例，界面按百分比显示。
+        defaultValue: 1,
         unit: "%",
         min: 25,
         max: 400,

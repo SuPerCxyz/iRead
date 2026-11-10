@@ -628,6 +628,16 @@ function anchorLocation(manifest, item, progressPercent = 0) {
   }
 }
 
+function cfiChapterPath(cfi) {
+  const match = /^epubcfi\(([^!]+)!\//.exec(cfi) ?? null
+  return match?.[1] ?? null
+}
+
+function cfiRangeStartStep(cfi) {
+  const match = /!\/\d+,\/(\d+)/.exec(cfi)
+  return match === null ? null : Number.parseInt(match[1], 10)
+}
+
 async function installHarness(page, manifest, settings = null) {
   return page.evaluate(
     async ({ manifestValue, settingsValue }) => {
@@ -1026,6 +1036,42 @@ async function main() {
       beforeReflow.location.locatorPayload.spineIndex,
       "字号重排后跳到了其他章节",
     )
+    const beforeCfi = beforeReflow.location.locatorPayload.cfi
+    const afterCfi = afterReflow.location.locatorPayload.cfi
+    if (beforeReflow.location.locatorType === "epub-cfi") {
+      assert.equal(
+        cfiChapterPath(afterCfi),
+        cfiChapterPath(beforeCfi),
+        "字号重排后 CFI 章节基址变化",
+      )
+      const beforeStep = cfiRangeStartStep(beforeCfi)
+      const afterStep = cfiRangeStartStep(afterCfi)
+      assert.ok(
+        beforeStep !== null && afterStep !== null,
+        `字号重排后缺少 CFI 文本锚点：before=${beforeCfi} after=${afterCfi}`,
+      )
+      // 元素步长每段 +2；允许前后移动一段，等同于页面把相邻段落带入首屏。
+      assert.ok(
+        Math.abs(afterStep - beforeStep) <= 2,
+        `字号重排后文本锚点偏离过远：${beforeStep} -> ${afterStep}`,
+      )
+      const beforeQuote = beforeReflow.location.locatorPayload.textQuote?.exact ?? ""
+      const afterQuote = afterReflow.location.locatorPayload.textQuote?.exact ?? ""
+      assert.match(
+        beforeQuote,
+        /第二章后半第 [6-8] 段/,
+        "重排前文本锚点不在预期段落",
+      )
+      assert.match(
+        afterQuote,
+        /第二章后半第 [6-8] 段/,
+        "字号重排后文本锚点离开原段落附近",
+      )
+    }
+    assert.ok(
+      afterReflow.pages > beforeReflow.pages,
+      `字号重排未增加页数：${beforeReflow.pages} -> ${afterReflow.pages}`,
+    )
     assert.ok(
       afterReflow.location.locatorPayload.chapterProgress > 0.05,
       "字号重排后退回章节开头",
@@ -1033,7 +1079,12 @@ async function main() {
     assert.ok(
       afterReflow.location.locatorPayload.chapterProgress + 0.2 >=
         beforeReflow.location.locatorPayload.chapterProgress,
-      "字号重排后位置明显前移",
+      "字号重排后章节进度明显前移",
+    )
+    assert.ok(
+      afterReflow.location.progressPercent + 12 >=
+        beforeReflow.location.progressPercent,
+      `字号重排后进度百分比明显回退：${beforeReflow.location.progressPercent} -> ${afterReflow.location.progressPercent}`,
     )
     assert.equal(
       resourceRequest(requests, epub3.bookId, chapter2Id).length,

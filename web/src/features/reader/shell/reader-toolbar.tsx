@@ -128,6 +128,7 @@ export function ReaderTopToolbar({
             className="iread-reader-shell__title"
             data-route-heading
             tabIndex={-1}
+            title={title}
           >
             {title}
           </h1>

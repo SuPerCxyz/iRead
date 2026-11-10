@@ -57,6 +57,8 @@ type BookDTO struct {
 type ValidationError struct {
 	Field   string
 	Message string
+	// Details 是附加的结构化信息，只包含字段名、颜色值与对比度，不含存储细节。
+	Details map[string]any
 }
 
 func (e *ValidationError) Error() string {
@@ -192,6 +194,11 @@ func parseGroups(raw []byte, field string) (map[string]any, error) {
 		}
 		for name, fieldValue := range groupObject {
 			if err := validateField(group, name, fieldValue); err != nil {
+				return nil, err
+			}
+		}
+		if group == "reflow" {
+			if err := validateReflowContrast(groupObject); err != nil {
 				return nil, err
 			}
 		}
@@ -404,6 +411,87 @@ func colorValue(value any, path string) error {
 		return nil
 	}
 	return invalid(path, path+" 必须是预设名或小写 #rrggbb")
+}
+
+// minimumReaderContrast 是正文、链接、选区背景相对文字的最低 WCAG 对比度。
+const minimumReaderContrast = 4.5
+
+// reflowContrastPairs 只覆盖同一请求中同时给出 hex 的颜色对；
+// 预设名、inherit 以及缺失字段由继承层或客户端处理，不在服务端计算。
+var reflowContrastPairs = []struct {
+	field      string
+	foreground string
+	background string
+}{
+	{field: "text", foreground: "text", background: "background"},
+	{field: "link", foreground: "link", background: "background"},
+	{field: "selection", foreground: "text", background: "selection"},
+}
+
+func validateReflowContrast(group map[string]any) error {
+	for _, pair := range reflowContrastPairs {
+		foreground, ok := hexColor(group[pair.foreground])
+		if !ok {
+			continue
+		}
+		background, ok := hexColor(group[pair.background])
+		if !ok {
+			continue
+		}
+		ratio := contrastRatio(relativeLuminance(foreground), relativeLuminance(background))
+		if ratio >= minimumReaderContrast {
+			continue
+		}
+		displayRatio := math.Round(ratio*1000) / 1000
+		fieldPath := "reflow." + pair.field
+		foregroundPath := "reflow." + pair.foreground
+		backgroundPath := "reflow." + pair.background
+		return &ValidationError{
+			Field: fieldPath,
+			Message: fmt.Sprintf("%s 与 %s 的对比度 %.3f:1 低于 %g:1",
+				fieldPath, backgroundPath, displayRatio, minimumReaderContrast),
+			Details: map[string]any{
+				"pair":       []string{foregroundPath, backgroundPath},
+				"foreground": foreground,
+				"background": background,
+				"ratio":      displayRatio,
+				"minimum":    minimumReaderContrast,
+			},
+		}
+	}
+	return nil
+}
+
+func hexColor(value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok || !lowercaseHexColor.MatchString(text) {
+		return "", false
+	}
+	return text, true
+}
+
+// relativeLuminance 按 WCAG 2.x 计算 sRGB 颜色的相对亮度。
+func relativeLuminance(color string) float64 {
+	channels := make([]float64, 3)
+	for i := 0; i < 3; i++ {
+		raw, _ := strconv.ParseInt(color[1+i*2:3+i*2], 16, 64)
+		channels[i] = linearizeChannel(float64(raw) / 255)
+	}
+	return 0.2126*channels[0] + 0.7152*channels[1] + 0.0722*channels[2]
+}
+
+func linearizeChannel(channel float64) float64 {
+	if channel <= 0.04045 {
+		return channel / 12.92
+	}
+	return math.Pow((channel+0.055)/1.055, 2.4)
+}
+
+func contrastRatio(a, b float64) float64 {
+	if a < b {
+		a, b = b, a
+	}
+	return (a + 0.05) / (b + 0.05)
 }
 
 func deepCopyValue(value map[string]any) map[string]any {

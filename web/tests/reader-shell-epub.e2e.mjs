@@ -22,6 +22,7 @@ import {
   createAuthenticatedStorageState,
   ensureAdmin,
 } from "./auth-helpers.mjs"
+import { assertReaderToolbarLayout } from "./reader-toolbar-layout.mjs"
 
 const WEB_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
 const REPO_ROOT = path.resolve(WEB_ROOT, "..")
@@ -185,12 +186,29 @@ function makeEpub(stamp) {
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="publisher-css" href="Styles/publisher.css" media-type="text/css"/>
 ${items.join("\n")}
   </manifest>
   <spine>
 ${spine.join("\n")}
   </spine>
 </package>`,
+      },
+      {
+        name: "OEBPS/Styles/publisher.css",
+        data: `/* 出版方直接给 p/h1 声明字号、字体和颜色，用于验证用户设置优先。 */
+p {
+  font-size: 40px;
+  font-family: monospace;
+  color: rgb(255, 0, 0);
+  margin-block: 2em;
+  text-indent: 2em;
+  line-height: 3;
+}
+h1 {
+  font-size: 48px;
+  color: rgb(0, 128, 0);
+}`,
       },
       {
         name: "OEBPS/nav.xhtml",
@@ -206,7 +224,7 @@ ${nav.join("\n")}
         name: `OEBPS/Text/${chapter.file}`,
         data: `<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
-  <head><title>${chapter.title}</title></head>
+  <head><title>${chapter.title}</title><link rel="stylesheet" type="text/css" href="../Styles/publisher.css"/></head>
   <body>${chapter.body}</body>
 </html>`,
       })),
@@ -467,6 +485,54 @@ async function epubSnapshot(page) {
   })
 }
 
+async function paragraphStyle(page, selector = "#p-1") {
+  return page.evaluate((target) => {
+    const doc = document
+      .querySelector("[data-reader-epub] foliate-view")
+      ?.renderer?.getContents?.()[0]?.doc
+    const node = doc?.querySelector(target)
+    if (!doc || !node) {
+      return null
+    }
+    const style = getComputedStyle(node)
+    return {
+      fontSize: style.fontSize,
+      fontFamily: style.fontFamily,
+      color: style.color,
+      marginBlockStart: style.marginBlockStart,
+      textIndent: style.textIndent,
+      html: doc.documentElement.outerHTML,
+    }
+  }, selector)
+}
+
+async function waitForParagraphStyle(page, expected, timeout = 10_000) {
+  await page.waitForFunction(
+    (target) => {
+      const doc = document
+        .querySelector("[data-reader-epub] foliate-view")
+        ?.renderer?.getContents?.()[0]?.doc
+      const node = doc?.querySelector("#p-1")
+      if (!doc || !node) {
+        return false
+      }
+      const style = getComputedStyle(node)
+      return (
+        style.fontSize === target.fontSize &&
+        style.color === target.color &&
+        style.marginBlockStart === target.marginBlockStart &&
+        style.textIndent === target.textIndent &&
+        (target.familyIncludes === undefined ||
+          style.fontFamily.includes(target.familyIncludes)) &&
+        (target.familyExcludes === undefined ||
+          !style.fontFamily.includes(target.familyExcludes))
+      )
+    },
+    expected,
+    { timeout },
+  )
+}
+
 async function waitForEpubText(page, needle, timeout = 20_000) {
   await page.waitForFunction(
     (expected) => {
@@ -568,6 +634,38 @@ async function main() {
     const desktop = await desktopContext.newPage()
     const pageErrors = []
     desktop.on("pageerror", (error) => pageErrors.push(error.message))
+    // 记录引擎首次标记 ready 时的正文 computed style，防止首帧先读到
+    // 出版方 40px/monospace/red 再被后续样式修正。
+    await desktop.addInitScript(() => {
+      window.__ireadFirstReadyStyle = null
+      const record = () => {
+        if (window.__ireadFirstReadyStyle !== null) {
+          return
+        }
+        if (document.querySelector("[data-reader-engine-ready]") === null) {
+          return
+        }
+        const doc = document
+          .querySelector("[data-reader-epub] foliate-view")
+          ?.renderer?.getContents?.()[0]?.doc
+        const node = doc?.querySelector("#p-1")
+        if (!doc || !node) {
+          return
+        }
+        const style = getComputedStyle(node)
+        window.__ireadFirstReadyStyle = {
+          fontSize: style.fontSize,
+          fontFamily: style.fontFamily,
+          color: style.color,
+        }
+      }
+      const observer = new MutationObserver(record)
+      observer.observe(document, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: ["data-reader-engine-ready"],
+      })
+    })
 
     // S5 预取会在阅读过程中提前请求相邻章节。故障注入必须从首次导航前开始，
     // 确保第三章资源从未写入 L1/L3；否则预取缓存会让后面的 500 路由不被命中。
@@ -636,6 +734,158 @@ async function main() {
     await desktop.screenshot({
       path: path.join(SCREENSHOT_DIR, "desktop-first-chapter.png"),
     })
+
+    logStep("出版方 CSS 不覆盖用户字号/字体/文字色，首帧即生效")
+    const firstReadyStyle = await desktop.evaluate(
+      () => window.__ireadFirstReadyStyle,
+    )
+    assert.ok(firstReadyStyle, "引擎就绪时未找到正文段落")
+    assert.equal(
+      firstReadyStyle.fontSize,
+      "20px",
+      "引擎就绪首帧仍是出版方字号",
+    )
+    assert.match(
+      firstReadyStyle.fontFamily,
+      /monospace/,
+      "publisherFont 打开时出版方字体应保留",
+    )
+    assert.notEqual(
+      firstReadyStyle.color,
+      "rgb(255, 0, 0)",
+      "出版方文字色覆盖了用户主题色",
+    )
+    const initialParagraph = await paragraphStyle(desktop)
+    assert.equal(initialParagraph.fontSize, "20px")
+    assert.match(initialParagraph.fontFamily, /monospace/)
+    assert.notEqual(initialParagraph.color, "rgb(255, 0, 0)")
+    console.log(
+      `[E2E] 首帧 p computed：font-size=${firstReadyStyle.fontSize} font-family=${firstReadyStyle.fontFamily} color=${firstReadyStyle.color}`,
+    )
+
+    logStep("用户字体/文字色/段距/缩进覆盖出版方 p 样式并持久化")
+    const styledGlobalGet = await adminApi.get("/api/v1/settings/reader")
+    assert.equal(styledGlobalGet.status, 200)
+    const styledGlobalPut = await adminApi.put("/api/v1/settings/reader", {
+      schemaVersion: 1,
+      baseRevision: styledGlobalGet.payload?.data?.revision ?? "0",
+      value: {
+        reflow: {
+          theme: "white",
+          fontFamily: "publisher",
+          publisherFont: true,
+          fontSize: 20,
+          paragraphSpacing: 0.6,
+          textIndent: 1,
+          background: "#ffffff",
+          text: "#222222",
+          link: "#123456",
+          selection: "#cccccc",
+          publisherCSSMode: "publisher",
+        },
+      },
+    })
+    assert.equal(
+      styledGlobalPut.status,
+      200,
+      `用户排版设置保存失败：${JSON.stringify(styledGlobalPut.payload)}`,
+    )
+    await desktop.reload({ waitUntil: "domcontentloaded" })
+    await desktop.waitForSelector("[data-reader-engine-ready]", {
+      timeout: 30_000,
+    })
+    await waitForEpubText(desktop, "第一章正文")
+    const styledExpectation = {
+      fontSize: "20px",
+      color: "rgb(34, 34, 34)",
+      marginBlockStart: "12px",
+      textIndent: "20px",
+      familyIncludes: "monospace",
+    }
+    await waitForParagraphStyle(desktop, styledExpectation)
+    const styledParagraph = await paragraphStyle(desktop)
+    assert.match(
+      styledParagraph.html,
+      /font-size:\s*40px/,
+      "出版方 CSS 开启时未加载出版方样式",
+    )
+    console.log(
+      `[E2E] 用户设置 p computed：font-size=${styledParagraph.fontSize} font-family=${styledParagraph.fontFamily} color=${styledParagraph.color} margin=${styledParagraph.marginBlockStart} indent=${styledParagraph.textIndent}`,
+    )
+
+    await desktop.getByRole("button", { name: "阅读设置" }).click()
+    const styledPanel = desktop.locator('[data-reader-panel="settings"]')
+    await styledPanel.waitFor({ timeout: 5000 })
+    await desktop.locator("#reader-setting-reflow-fontFamily").click()
+    await desktop.getByRole("option", { name: "衬线", exact: true }).click()
+    await waitForParagraphStyle(desktop, {
+      ...styledExpectation,
+      familyIncludes: "Georgia",
+      familyExcludes: "monospace",
+    })
+    await desktop.locator('[data-reader-autosave="saved"]').waitFor({
+      timeout: 10_000,
+    })
+
+    await desktop.locator("#reader-setting-reflow-fontFamily").click()
+    await desktop.getByRole("option", { name: "出版方字体", exact: true }).click()
+    await waitForParagraphStyle(desktop, {
+      ...styledExpectation,
+      familyIncludes: "monospace",
+    })
+    await desktop.getByRole("switch", { name: "允许出版方字体" }).click()
+    await waitForParagraphStyle(desktop, {
+      ...styledExpectation,
+      familyIncludes: "system-ui",
+      familyExcludes: "monospace",
+    })
+    await desktop.locator('[data-reader-autosave="saved"]').waitFor({
+      timeout: 10_000,
+    })
+
+    await desktop.locator("#reader-setting-reflow-publisherCSSMode").click()
+    await desktop
+      .getByRole("option", { name: "不加载出版方样式", exact: true })
+      .click()
+    await waitForEpubText(desktop, "第一章正文")
+    await waitForParagraphStyle(desktop, {
+      ...styledExpectation,
+      familyIncludes: "system-ui",
+      familyExcludes: "monospace",
+    })
+    const publisherOffParagraph = await paragraphStyle(desktop)
+    assert.equal(
+      publisherOffParagraph.html.includes("font-size: 40px"),
+      false,
+      "publisherCSSMode=off 后仍加载出版方样式",
+    )
+    await desktop.locator('[data-reader-autosave="saved"]').waitFor({
+      timeout: 10_000,
+    })
+
+    await desktop.reload({ waitUntil: "domcontentloaded" })
+    await desktop.waitForSelector("[data-reader-engine-ready]", {
+      timeout: 30_000,
+    })
+    await waitForEpubText(desktop, "第一章正文")
+    await waitForParagraphStyle(desktop, {
+      ...styledExpectation,
+      familyIncludes: "system-ui",
+      familyExcludes: "monospace",
+    })
+    const reopenedParagraph = await paragraphStyle(desktop)
+    assert.equal(
+      reopenedParagraph.html.includes("font-size: 40px"),
+      false,
+      "重开后 publisherCSSMode=off 未保持",
+    )
+    assert.equal(reopenedParagraph.fontSize, "20px")
+    assert.equal(reopenedParagraph.color, "rgb(34, 34, 34)")
+    assert.equal(reopenedParagraph.marginBlockStart, "12px")
+    assert.equal(reopenedParagraph.textIndent, "20px")
+    console.log(
+      `[E2E] 重开 p computed：font-size=${reopenedParagraph.fontSize} font-family=${reopenedParagraph.fontFamily} color=${reopenedParagraph.color} margin=${reopenedParagraph.marginBlockStart} indent=${reopenedParagraph.textIndent}`,
+    )
 
     logStep("桌面：目录跳转、翻页与 CFI 书签")
     await desktop.getByRole("button", { name: "目录与书签" }).click()
@@ -839,6 +1089,15 @@ async function main() {
       "重开后没有恢复到保存的章节",
     )
     console.log(`[E2E] 重开恢复：${beforeExitPosition} -> ${await positionText(desktop)}`)
+
+    logStep("顶栏 1920/1440/1024/768/390：单行对齐、书名省略与操作区完整")
+    await assertReaderToolbarLayout(desktop, {
+      label: "EPUB 阅读器顶栏",
+      expectEllipsis: (viewport) => viewport.width < 768,
+    })
+    await desktop.screenshot({
+      path: path.join(SCREENSHOT_DIR, "desktop-epub-toolbar-long-title.png"),
+    })
 
     logStep("手机 390x844：工具栏、目录抽屉与翻页")
     const mobileContext = await browser.newContext({

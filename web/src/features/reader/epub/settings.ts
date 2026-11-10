@@ -228,6 +228,32 @@ function fontFamilyValue(settings: EpubReaderSettings): string | null {
 }
 
 /**
+ * 正文块级元素直接声明用户字号/颜色，避免出版方 `p { font-size }`
+ * 等直接规则覆盖 body 继承值。`:root:root` 提高优先级，用于压过
+ * 出版方常见的 class 选择器；`!important` 仍与出版方 important 规则
+ * 按 specificity 比较。
+ */
+const TEXT_BLOCK_SELECTOR =
+  ":root:root body p, :root:root body div, :root:root body li, :root:root body dt, :root:root body dd, :root:root body blockquote"
+
+const HEADING_SELECTOR =
+  ":root:root body h1, :root:root body h2, :root:root body h3, :root:root body h4, :root:root body h5, :root:root body h6"
+
+/** 标题随用户字号缩放，避免出版方绝对字号把标题固定在旧的正文基准上。 */
+const HEADING_FONT_SIZES: [string, string][] = [
+  ["h1", "2em"],
+  ["h2", "1.6em"],
+  ["h3", "1.35em"],
+  ["h4", "1.15em"],
+  ["h5", "1em"],
+  ["h6", "0.9em"],
+]
+
+function declarationBlock(declarations: string[]): string {
+  return `{ ${declarations.join("; ")}; }`
+}
+
+/**
  * 生成注入 EPUB 内容文档的阅读样式。使用 !important 覆盖出版方排版，
  * 但不触碰 Shell；颜色只在通过 safeCssColor 后写入。
  */
@@ -245,14 +271,49 @@ export function buildReaderCss(settings: EpubReaderSettings): string {
   rules.push(
     `body { font-size: ${settings.fontSize}px !important; font-weight: ${settings.fontWeight} !important; line-height: ${settings.lineHeight} !important; }`,
   )
+  // 出版方字体仅在用户选择“出版方字体”且未关闭出版方样式时保留；
+  // family 为 null 表示让出版方 p/div 等直接规则继续生效。
+  const blockDeclarations = [`font-size: ${settings.fontSize}px !important`]
+  if (family !== null) {
+    blockDeclarations.push(`font-family: ${family} !important`)
+  }
+  if (settings.textColor !== null) {
+    blockDeclarations.push(`color: ${settings.textColor} !important`)
+  }
+  rules.push(`${TEXT_BLOCK_SELECTOR} ${declarationBlock(blockDeclarations)}`)
+
+  const headingDeclarations: string[] = []
+  if (family !== null) {
+    headingDeclarations.push(`font-family: ${family} !important`)
+  }
+  if (settings.textColor !== null) {
+    headingDeclarations.push(`color: ${settings.textColor} !important`)
+  }
+  if (headingDeclarations.length > 0) {
+    rules.push(
+      `${HEADING_SELECTOR} ${declarationBlock(headingDeclarations)}`,
+    )
+  }
+  for (const [tag, size] of HEADING_FONT_SIZES) {
+    rules.push(
+      `:root:root body ${tag} { font-size: ${size} !important; }`,
+    )
+  }
+
   rules.push(
-    `body p, body div, body li, body dd, body blockquote { font-weight: inherit !important; line-height: ${settings.lineHeight} !important; }`,
+    `body p, body div, body li, body dt, body dd, body blockquote { font-weight: inherit !important; line-height: ${settings.lineHeight} !important; }`,
+  )
+  // 段距和缩进的 em 以 p 自身最终字号为基准；上面的块级规则已把 p
+  // 的字号固定为用户值，因此不会跟随出版方的 40px 等字号放大。
+  rules.push(
+    `:root:root body p { margin-block: ${settings.paragraphSpacing}em !important; }`,
   )
   rules.push(
-    `body p { margin-block: ${settings.paragraphSpacing}em !important; }`,
+    `:root:root body p { text-indent: ${settings.textIndent}em !important; }`,
   )
-  rules.push(`body p { text-indent: ${settings.textIndent}em !important; }`)
-  rules.push(`body p { text-align: ${settings.align} !important; }`)
+  rules.push(
+    `:root:root body p { text-align: ${settings.align} !important; }`,
+  )
   if (settings.pagination === "scroll") {
     rules.push(
       `body { padding-block: ${settings.verticalMargin}vh !important; }`,

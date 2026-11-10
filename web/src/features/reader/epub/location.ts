@@ -43,17 +43,62 @@ export function textQuoteFromRange(range: Range | undefined): EpubTextQuote | nu
   return { exact, prefix, suffix }
 }
 
+/** 全书 fraction（0-1）换算成当前章节内的进度（0-1）。 */
 export function chapterProgressFromFractions(
   index: number,
-  fraction: number,
+  globalFraction: number,
   sectionFractions: number[],
 ): number {
   const start = finite(sectionFractions[index])
   const end = finite(sectionFractions[index + 1])
   if (start !== null && end !== null && end > start) {
-    return clamp((fraction - start) / (end - start), 0, 1)
+    return clamp((globalFraction - start) / (end - start), 0, 1)
   }
-  return clamp(fraction, 0, 1)
+  return clamp(globalFraction, 0, 1)
+}
+
+export interface RelocateFractionState {
+  index: number
+  fraction?: number
+  sectionFractions: number[]
+  scrolled: boolean
+  page: number
+  pages: number
+  atEnd: boolean
+}
+
+/**
+ * 计算当前可见位置对应的全书 fraction（0-1）。
+ *
+ * foliate 的 relocate.fraction 取的是当前页“结束”位置（SectionProgress 用
+ * nextSize 计算），直接使用会让分页章节的末页显示成章节 100%，字号重排改变
+ * 页数后同一段落还会明显回退。分页模式改为由 page/pages 取页起点；滚动模式
+ * 的 fraction 本身已是起点。全书末页固定返回 1，保证读完最后一页显示 100%。
+ */
+export function relocateProgressFraction(
+  state: RelocateFractionState,
+): number | null {
+  if (state.atEnd) {
+    return 1
+  }
+  if (state.scrolled) {
+    return finite(state.fraction)
+  }
+  const start = finite(state.sectionFractions[state.index])
+  const end = finite(state.sectionFractions[state.index + 1])
+  const pageCount = state.pages - 2
+  if (start === null || end === null || end <= start) {
+    return null
+  }
+  if (
+    !Number.isFinite(state.page) ||
+    !Number.isFinite(pageCount) ||
+    pageCount <= 0
+  ) {
+    return null
+  }
+  const pageStart = clamp((state.page - 1) / pageCount, 0, 1)
+  return start + pageStart * (end - start)
 }
 
 export function locationFromRelocate(
@@ -61,14 +106,14 @@ export function locationFromRelocate(
   section: EpubSectionLike,
   sectionFractions: number[],
 ): ReaderLocation {
-  const sectionFraction =
+  const globalFraction =
     finite(detail.fraction) ??
     finite(sectionFractions[detail.index]) ??
     0
-  const progressPercent = clamp(sectionFraction * 100, 0, 100)
+  const progressPercent = clamp(globalFraction * 100, 0, 100)
   const chapterProgress = chapterProgressFromFractions(
     detail.index,
-    sectionFraction,
+    globalFraction,
     sectionFractions,
   )
   const textQuote = textQuoteFromRange(detail.range)

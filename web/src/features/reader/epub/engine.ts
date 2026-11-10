@@ -26,7 +26,13 @@ import {
   parseBuiltChapter,
   type BuiltChapter,
 } from "./chapter"
-import { anchorForPayload, locationFromRelocate, resolvePayloadIndex } from "./location"
+import {
+  anchorForPayload,
+  chapterProgressFromFractions,
+  locationFromRelocate,
+  relocateProgressFraction,
+  resolvePayloadIndex,
+} from "./location"
 import {
   EpubResourceClient,
   isAbortError,
@@ -310,10 +316,7 @@ export class EpubEngine implements EpubReaderEngine {
     for (const entry of [...this.contentDocuments.values()]) entry.cleanup()
     this.mountAbort?.abort()
     this.mountAbort = null
-    if (this.reflowTimer !== null) {
-      window.clearTimeout(this.reflowTimer)
-      this.reflowTimer = null
-    }
+    this.cancelReflowRestore()
     for (const state of this.chapterLoads.values()) {
       state.abort.abort()
     }
@@ -354,6 +357,8 @@ export class EpubEngine implements EpubReaderEngine {
   }
 
   async restore(location: ReaderLocation): Promise<ReaderEngineResult> {
+    // 新的导航优先于尚未执行的重排恢复，避免迟到的 restore 覆盖新位置。
+    this.cancelReflowRestore()
     return this.enqueueNavigation(async (epoch) => {
       if (epoch !== this.navigationEpoch) {
         return fail("位置已被新的导航取代。", true)
@@ -401,6 +406,7 @@ export class EpubEngine implements EpubReaderEngine {
   }
 
   async advance(direction: "previous" | "next"): Promise<ReaderEngineResult> {
+    this.cancelReflowRestore()
     if (!this.ensureMounted()) {
       return fail("阅读引擎尚未挂载。", true)
     }
@@ -437,9 +443,7 @@ export class EpubEngine implements EpubReaderEngine {
     }
     const reflowTarget = this.lastLocation
     this.applyViewAttributes()
-    if (this.reflowTimer !== null) {
-      window.clearTimeout(this.reflowTimer)
-    }
+    this.cancelReflowRestore()
     this.reflowTimer = window.setTimeout(() => {
       this.reflowTimer = null
       const view = this.view
@@ -787,10 +791,15 @@ export class EpubEngine implements EpubReaderEngine {
     }
   }
 
-  private scheduleReflowRestore(target?: ReaderLocation | null): void {
+  private cancelReflowRestore(): void {
     if (this.reflowTimer !== null) {
       window.clearTimeout(this.reflowTimer)
+      this.reflowTimer = null
     }
+  }
+
+  private scheduleReflowRestore(target?: ReaderLocation | null): void {
+    this.cancelReflowRestore()
     const location = target === undefined ? this.lastLocation : target
     this.reflowTimer = window.setTimeout(() => {
       this.reflowTimer = null
@@ -874,8 +883,27 @@ export class EpubEngine implements EpubReaderEngine {
       return
     }
     const fractions = this.view?.getSectionFractions() ?? []
+    const renderer = this.view?.renderer
+    // foliate 的 detail.fraction 是当前页终点；进度必须用页起点，否则末页会
+    // 虚高到章节 100%，重排改变页数后同一段落还会回退。
+    const visibleFraction =
+      renderer === undefined
+        ? null
+        : relocateProgressFraction({
+            index,
+            fraction: detail.fraction,
+            sectionFractions: fractions,
+            scrolled: renderer.scrolled,
+            page: renderer.page,
+            pages: renderer.pages,
+            atEnd: renderer.atEnd,
+          })
+    const relocateDetail =
+      visibleFraction === null
+        ? { ...detail, index }
+        : { ...detail, index, fraction: visibleFraction }
     const location = locationFromRelocate(
-      { ...detail, index },
+      relocateDetail,
       {
         index: section.index,
         resourceId: section.resourceId,
@@ -891,7 +919,12 @@ export class EpubEngine implements EpubReaderEngine {
       location.locatorType === "epub-anchor"
         ? location.locatorPayload.chapterProgress
         : 0
-    this.prefetchAdjacent(index, chapterProgress)
+    // 预取仍按“当前页读完”的位置判断，短章节在最后一页也能预取下一章。
+    const endChapterProgress =
+      typeof detail.fraction === "number"
+        ? chapterProgressFromFractions(index, detail.fraction, fractions)
+        : 0
+    this.prefetchAdjacent(index, Math.max(chapterProgress, endChapterProgress))
   }
 
   private readonly handleLoad = (event: Event): void => {

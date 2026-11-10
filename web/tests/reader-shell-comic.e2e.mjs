@@ -31,6 +31,7 @@ import {
   createAuthenticatedStorageState,
   ensureAdmin,
 } from "./auth-helpers.mjs"
+import { assertReaderToolbarLayout } from "./reader-toolbar-layout.mjs"
 
 const WEB_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
 const REPO_ROOT = path.resolve(WEB_ROOT, "..")
@@ -763,6 +764,15 @@ async function main() {
     assert.equal(snapshot.box?.width, 1200)
     assert.equal(snapshot.box?.height, 820)
     assert.match(snapshot.position ?? "", /第 1 \/ 12 页/)
+
+    logStep("顶栏 1920/1440/1024/768/390：单行对齐、徽标断点与操作区完整")
+    await assertReaderToolbarLayout(page, {
+      label: "漫画阅读器顶栏",
+      expectEllipsis: () => false,
+    })
+    await page.screenshot({
+      path: path.join(SCREENSHOT_DIR, "desktop-comic-toolbar.png"),
+    })
 
     await page.locator("[data-reader-page-next]").click()
     await waitForComicPage(page, 2)

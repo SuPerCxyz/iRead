@@ -489,19 +489,222 @@ async function main() {
     const firstCard = page.locator(".iread-book-card").first()
     assert.equal(await firstCard.locator("a").count(), 1, "卡片只保留一个详情入口")
     assert.equal(await firstCard.locator("button").count(), 0, "卡片内无嵌套按钮")
-    const coverImage = firstCard.locator(".iread-book-cover__image")
-    if ((await coverImage.count()) > 0) {
-      assert.equal(
-        await coverImage.first().getAttribute("loading"),
-        "lazy",
-        "网格封面必须懒加载",
-      )
-    } else {
-      assert.ok(
-        (await firstCard.locator(".iread-book-cover__fallback svg").count()) > 0,
-        "无封面时应显示 BookOpen 回退",
-      )
-    }
+    const firstCover = firstCard.locator(".iread-book-cover")
+    const firstCoverImage = firstCard.locator(".iread-book-cover__image")
+    await waitUntil(
+      async () => (await firstCoverImage.count()) === 1,
+      "种子图书应显示真实封面",
+    )
+    assert.equal(
+      await firstCoverImage.getAttribute("loading"),
+      "lazy",
+      "网格封面必须懒加载",
+    )
+    await waitUntil(
+      async () =>
+        firstCoverImage.evaluate(
+          (node) => node.complete && node.naturalWidth > 0,
+        ),
+      "正常封面应加载为真实图片",
+    )
+    assert.equal(
+      await firstCover.getAttribute("data-cover-state"),
+      "image",
+      "正常封面不应进入回退",
+    )
+    assert.equal(
+      await firstCard.locator(".iread-book-cover__fallback").count(),
+      0,
+      "正常封面不应同时显示占位",
+    )
+
+    logStep("封面 404 回退：书库、详情、首页与移动端")
+    const fallbackContext = await browser.newContext({
+      baseURL: BASE_URL,
+      viewport: { width: 1280, height: 900 },
+      locale: "zh-CN",
+      storageState,
+    })
+    contexts.push(fallbackContext)
+    const fallbackPage = await fallbackContext.newPage()
+    let coverRequests = 0
+    await fallbackPage.route("**/api/v1/books/*/cover*", async (route) => {
+      coverRequests += 1
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "not_found", message: "封面已随缓存清理删除" },
+        }),
+      })
+    })
+    await fallbackPage.goto(url("/library?q=Alpha"), {
+      waitUntil: "domcontentloaded",
+    })
+    await fallbackPage
+      .getByRole("heading", { level: 1, name: "书库" })
+      .waitFor({ timeout: 15000 })
+    const fallbackCard = fallbackPage.locator(".iread-book-card").first()
+    await waitUntil(
+      async () =>
+        (await fallbackCard.locator(".iread-book-cover__fallback").count()) === 1,
+      "封面 404 后书库卡片显示占位",
+    )
+    assert.ok(coverRequests > 0, "应真实请求封面地址")
+    assert.equal(
+      await fallbackCard.locator(".iread-book-cover__image").count(),
+      0,
+      "封面 404 后不得保留破图 img",
+    )
+    assert.equal(
+      await fallbackCard.locator(".iread-book-cover__fallback svg").count(),
+      1,
+      "封面回退应使用 BookOpen 图标",
+    )
+    assert.equal(
+      await fallbackCard.locator(".iread-book-cover__title").innerText(),
+      "Alpha 0",
+      "书库封面回退应显示真实标题",
+    )
+    assert.equal(
+      await fallbackCard
+        .locator(".iread-book-cover")
+        .getAttribute("data-cover-state"),
+      "fallback",
+      "书库封面应标记为回退状态",
+    )
+
+    await fallbackCard.click()
+    await fallbackPage
+      .getByRole("heading", { level: 1, name: "Alpha 0" })
+      .waitFor({ timeout: 15000 })
+    const detailFallback = fallbackPage.locator(
+      ".iread-book-cover--detail .iread-book-cover__fallback",
+    )
+    await detailFallback.waitFor({ timeout: 15000 })
+    assert.equal(
+      await fallbackPage
+        .locator(".iread-book-cover--detail .iread-book-cover__image")
+        .count(),
+      0,
+      "详情封面 404 后不得保留破图 img",
+    )
+    assert.equal(
+      await detailFallback.locator(".iread-book-cover__title").innerText(),
+      "Alpha 0",
+      "详情封面回退应显示真实标题",
+    )
+
+    await fallbackPage.goto(url("/"), { waitUntil: "domcontentloaded" })
+    const continueCover = fallbackPage.locator(
+      ".iread-home__continue-cover .iread-book-cover",
+    )
+    await waitUntil(
+      async () => (await continueCover.locator(".iread-book-cover__fallback").count()) === 1,
+      "首页继续阅读封面 404 后显示占位",
+    )
+    assert.equal(
+      await continueCover.locator(".iread-book-cover__image").count(),
+      0,
+      "首页继续阅读封面不得保留破图 img",
+    )
+    assert.equal(
+      await continueCover.locator(".iread-book-cover__title").innerText(),
+      "Alpha 0",
+      "首页继续阅读封面回退应显示真实标题",
+    )
+    const homeCard = fallbackPage.locator(".iread-book-grid .iread-book-card").first()
+    await waitUntil(
+      async () =>
+        (await homeCard.locator(".iread-book-cover__fallback").count()) === 1,
+      "首页最近添加封面 404 后显示占位",
+    )
+    assert.equal(
+      await homeCard.locator(".iread-book-cover__image").count(),
+      0,
+      "首页最近添加封面不得保留破图 img",
+    )
+    await fallbackContext.close()
+    contexts.splice(contexts.indexOf(fallbackContext), 1)
+
+    const coverMobile = await browser.newContext({
+      baseURL: BASE_URL,
+      viewport: { width: 390, height: 844 },
+      locale: "zh-CN",
+      storageState,
+      isMobile: true,
+      hasTouch: true,
+    })
+    contexts.push(coverMobile)
+    const coverMobilePage = await coverMobile.newPage()
+    const longCoverTitle = `Alpha ${"UnbrokenCoverTitle".repeat(12)}`
+    await coverMobilePage.route("**/api/v1/books?*", async (route) => {
+      const response = await route.fetch()
+      const payload = await response.json()
+      if (Array.isArray(payload.data) && payload.data.length > 0) {
+        payload.data[0].title = longCoverTitle
+      }
+      await route.fulfill({ response, json: payload })
+    })
+    await coverMobilePage.route("**/api/v1/books/*/cover*", async (route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "not_found", message: "封面已随缓存清理删除" },
+        }),
+      })
+    })
+    await coverMobilePage.goto(url("/library?q=Alpha"), {
+      waitUntil: "domcontentloaded",
+    })
+    const mobileFallbackCard = coverMobilePage.locator(".iread-book-card").first()
+    await waitUntil(
+      async () =>
+        (await mobileFallbackCard.locator(".iread-book-cover__fallback").count()) === 1,
+      "移动端封面 404 后显示占位",
+    )
+    assert.equal(
+      await mobileFallbackCard.locator(".iread-book-cover__title").innerText(),
+      longCoverTitle,
+      "移动端回退应显示真实标题",
+    )
+    const mobileCoverMetrics = await mobileFallbackCard
+      .locator(".iread-book-cover")
+      .evaluate((cover) => {
+        const title = cover.querySelector(".iread-book-cover__title")
+        const coverRect = cover.getBoundingClientRect()
+        const titleRect = title.getBoundingClientRect()
+        return {
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+          coverRight: coverRect.right,
+          coverBottom: coverRect.bottom,
+          titleRight: titleRect.right,
+          titleBottom: titleRect.bottom,
+          titleClientWidth: title.clientWidth,
+          titleScrollWidth: title.scrollWidth,
+        }
+      })
+    assert.ok(
+      mobileCoverMetrics.documentWidth <= mobileCoverMetrics.viewportWidth + 1,
+      "移动端封面回退不得造成横向溢出",
+    )
+    assert.ok(
+      mobileCoverMetrics.titleRight <= mobileCoverMetrics.coverRight + 1,
+      "移动端封面标题不得超出封面宽度",
+    )
+    assert.ok(
+      mobileCoverMetrics.titleBottom <= mobileCoverMetrics.coverBottom + 1,
+      "移动端封面标题不得溢出封面高度",
+    )
+    assert.ok(
+      mobileCoverMetrics.titleScrollWidth <=
+        mobileCoverMetrics.titleClientWidth + 1,
+      "移动端封面标题应折行而不是横向撑开",
+    )
+    await coverMobile.close()
+    contexts.splice(contexts.indexOf(coverMobile), 1)
 
     logStep("搜索、格式、阅读状态、排序与 URL 同步")
     const search = page.getByRole("searchbox", { name: "搜索图书" })
@@ -1193,17 +1396,14 @@ async function main() {
     await subtitlePage.goto(url("/library?q=Alpha"), {
       waitUntil: "domcontentloaded",
     })
+    // content-visibility 布局可能让 innerText 短暂为空，等待真实文本而不是只等节点出现。
     await waitUntil(
       async () =>
-        (await subtitlePage.locator(".iread-book-card__subtitle").count()) > 0,
+        (await subtitlePage
+          .locator(".iread-book-card__subtitle")
+          .first()
+          .innerText()) === "副标题注入",
       "开启副标题后显示列表副标题",
-    )
-    assert.equal(
-      await subtitlePage
-        .locator(".iread-book-card__subtitle")
-        .first()
-        .innerText(),
-      "副标题注入",
     )
     await subtitleContext.close()
     contexts.splice(contexts.indexOf(subtitleContext), 1)

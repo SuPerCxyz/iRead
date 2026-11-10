@@ -1,8 +1,6 @@
-import { Info } from "lucide-react"
 import { useState } from "react"
 import { useSearchParams } from "react-router-dom"
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Field,
   FieldLabel,
@@ -18,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { AppearanceSettings } from "@/features/appearance/appearance-settings"
 import { LibraryBookshelfSettings } from "@/features/library/settings/library-bookshelf-settings"
+import { GlobalReaderDefaults } from "@/features/reader/settings/global-reader-defaults"
 import { CachePwaSettings } from "@/features/settings/cache"
 
 type SettingsGroup = "appearance" | "bookshelf" | "reading" | "cache"
@@ -99,13 +98,7 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent className="iread-settings__panel" value="reading">
-            <Alert>
-              <Info aria-hidden="true" />
-              <AlertTitle>阅读设置将在阅读器接入后可用</AlertTitle>
-              <AlertDescription>
-                EPUB、PDF 与漫画的阅读默认值会在对应阅读器接入后按格式提供。
-              </AlertDescription>
-            </Alert>
+            <GlobalReaderDefaults />
           </TabsContent>
 
           <TabsContent className="iread-settings__panel" value="cache">

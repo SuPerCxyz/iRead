@@ -332,6 +332,30 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
           }),
     [activeFileVersion, bookId],
   )
+  const handlePdfOpenStateChange = useCallback(
+    (state: "ready" | "error", detail: { pageCount: number }) => {
+      if (state !== "ready") {
+        return
+      }
+      // PDF 引擎内部重试不经过 React 的错误分支；打开成功后清除可能残留
+      // 的底部提示与旧错误，避免成功后仍显示上一次失败的信息。
+      setNotice(null)
+      setEngineError(null)
+      // 首次失败时 Shell 记录到的是 0 页；重试成功后必须刷新，否则底部
+      // 翻页/跳页仍被判定为不可用。
+      setPdfDocumentInfo((previous) => {
+        if (
+          previous === null ||
+          detail.pageCount < 1 ||
+          previous.pageCount === detail.pageCount
+        ) {
+          return previous
+        }
+        return { ...previous, pageCount: detail.pageCount }
+      })
+    },
+    [],
+  )
   const engine = useMemo<ReaderEngine | null>(
     () =>
       format === null
@@ -339,8 +363,9 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
         : createReaderEngine(format, {
             onBack: goBack,
             cache: cacheRuntime,
+            onOpenStateChange: handlePdfOpenStateChange,
           }),
-    [cacheRuntime, format, goBack],
+    [cacheRuntime, format, goBack, handlePdfOpenStateChange],
   )
   const currentDocumentInfo = engineReady && pdfDocumentInfo?.engine === engine ? pdfDocumentInfo : null
   const pageCount = readerPageCount(manifest, currentDocumentInfo)
@@ -474,6 +499,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
         if (isPdfReaderEngine(engine)) {
           setPdfView(engine.getView())
           setPdfDocumentInfo({ engine, bookId: manifest.bookId, fileVersion: manifest.fileVersion, pageCount: engine.getPageCount() })
+          setNotice(null)
         }
         setEngineReady(true)
       })
@@ -805,6 +831,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
           }
         } else if (isPdfReaderEngine(engine)) {
           setPdfView(engine.getView())
+          setNotice(null)
           const restored = engine.getLocation()
           if (restored !== null) {
             setSessionLocation(restored)
@@ -1519,6 +1546,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
               engineRetryable={engineError?.retryable ?? false}
               onRetryEngine={() => {
                 setEngineError(null)
+                setNotice(null)
                 setEngineMountNonce((current) => current + 1)
               }}
               chapterFailure={chapterFailure}

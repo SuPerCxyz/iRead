@@ -307,6 +307,9 @@ func writeReaderSettingsValidation(w http.ResponseWriter, r *http.Request, err e
 	var validation *readersettings.ValidationError
 	if errors.As(err, &validation) {
 		details := map[string]any{}
+		for key, value := range validation.Details {
+			details[key] = value
+		}
 		if validation.Field != "" {
 			details["field"] = validation.Field
 		}

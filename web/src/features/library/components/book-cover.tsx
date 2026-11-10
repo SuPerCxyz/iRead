@@ -39,18 +39,26 @@ export function BookCover({
   variant,
   ratio = "original",
 }: BookCoverProps) {
+  // 服务端派生封面可能被缓存清理删除，而 DTO 仍返回旧 href；按 href 记录失败，
+  // 只回退当前地址，避免换书或重新整理后把旧失败状态带到新封面。
   const [failedHref, setFailedHref] = useState<string | null>(null)
   const href = coverHrefFor(
     book.cover,
     variant === "detail" ? "detail" : "grid",
   )
   const failed = href !== null && failedHref === href
+  const hasImage = href !== null && !failed
   const className = `iread-book-cover iread-book-cover--${variant}`
 
   return (
-    <AspectRatio ratio={ratioNumber(book, ratio)} className={className}>
-      {href !== null && !failed ? (
+    <AspectRatio
+      ratio={ratioNumber(book, ratio)}
+      className={className}
+      data-cover-state={hasImage ? "image" : "fallback"}
+    >
+      {hasImage ? (
         <img
+          key={href}
           className="iread-book-cover__image"
           src={href}
           alt={`${book.title} 封面`}
