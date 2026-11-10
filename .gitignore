@@ -1,0 +1,35 @@
+# 依赖与构建产物
+node_modules/
+web/node_modules/
+web/dist/
+web/coverage/
+web/*.tsbuildinfo
+bin/
+server/iread
+*.exe
+
+# 本机数据与备份（不得提交数据库、原件或缓存）
+data/
+data-dev/
+backups/
+artifacts/
+screenshots/
+
+# 环境变量与本地配置
+.env
+.env.*
+!.env.example
+
+# 本机部署临时文件
+/current.jar
+/manifest.json
+/progress.json
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/

@@ -1,0 +1,54 @@
+name: iread
+
+services:
+  iread:
+    build:
+      context: .
+      args:
+        VERSION: ${IREAD_VERSION:-0.1.0}
+        # 构建期依赖源；默认官方源，网络受限时可覆盖。
+        NPM_REGISTRY: ${IREAD_NPM_REGISTRY:-https://registry.npmjs.org}
+        GOPROXY: ${IREAD_GOPROXY:-https://proxy.golang.org,direct}
+    # 当前代码构建使用独立标签，避免覆盖冻结的 iread:stage1 测试镜像标签。
+    image: iread:local
+    restart: unless-stopped
+    # 默认只发布到宿主机回环地址；认证已接入也不得直接改成 0.0.0.0 或 "8080:8080"。
+    # 公网/远程访问必须先配置 HTTPS 反向代理、IREAD_PUBLIC_ORIGIN 和 setup 令牌。
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 容器内固定值优先于 .env，避免误把监听地址改回回环或换掉数据目录。
+      IREAD_ADDR: 0.0.0.0:8080
+      IREAD_ALLOW_NON_LOOPBACK: "1"
+      IREAD_WEB_DIR: /app/web
+      IREAD_BOOKS_DIR: /data/books
+      IREAD_DB_DIR: /data/db
+      IREAD_CACHE_DIR: /data/cache
+      # IREAD_PUBLIC_ORIGIN、IREAD_SETUP_TOKEN、IREAD_INDEX_WORKERS 不在此处固定：
+      # 写在 .env 中会经 env_file 传入容器。容器/反向代理首次启动前至少设置
+      # IREAD_PUBLIC_ORIGIN 与 IREAD_SETUP_TOKEN（或在初始化前阻断 setup 外部访问）。
+      # 默认 public origin 为 http://127.0.0.1:8080；索引 worker 上限为 1。
+      IREAD_LOG_LEVEL: ${IREAD_LOG_LEVEL:-info}
+      IREAD_LOG_FORMAT: ${IREAD_LOG_FORMAT:-text}
+    volumes:
+      - iread-books:/data/books
+      - iread-db:/data/db
+      - iread-cache:/data/cache
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  # 固定卷名，避免随目录名变化；三卷必须独立，不得合并或嵌套。
+  iread-books:
+    name: iread-books
+  iread-db:
+    name: iread-db
+  iread-cache:
+    name: iread-cache

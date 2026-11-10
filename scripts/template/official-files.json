@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+  "registry": "new-york-v4",
+  "generatedAt": "2026-11-10",
+  "files": [
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/alert-dialog.tsx",
+      "upstreamPath": "ui/alert-dialog.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "566c463a61b48c79ad544bfdd80434174107c9d5",
+      "localPath": "web/src/components/ui/alert-dialog.tsx",
+      "mode": "verbatim",
+      "sha256": "b3dfb83e54ed8c82071df5289e5149628bf573458fc2da2d62f93f8380041b28",
+      "upstreamSha256": "b3dfb83e54ed8c82071df5289e5149628bf573458fc2da2d62f93f8380041b28"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/alert.tsx",
+      "upstreamPath": "ui/alert.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "86310a66e80c0a370169b9fb4ed49af6bea954fb",
+      "localPath": "web/src/components/ui/alert.tsx",
+      "mode": "verbatim",
+      "sha256": "d03dcae5cdb63c381c1144ca9a0c49ba0e46466967d7deb94662034042acb034",
+      "upstreamSha256": "d03dcae5cdb63c381c1144ca9a0c49ba0e46466967d7deb94662034042acb034"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/breadcrumb.tsx",
+      "upstreamPath": "ui/breadcrumb.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "12aa08af155d76bf3335b41ba9b92a593b6354d1",
+      "localPath": "web/src/components/ui/breadcrumb.tsx",
+      "mode": "verbatim",
+      "sha256": "c75fcd3d9e8470188bc0dd4b27a2b26fff3ad42b9c9c534a953dc090ae2cba33",
+      "upstreamSha256": "c75fcd3d9e8470188bc0dd4b27a2b26fff3ad42b9c9c534a953dc090ae2cba33"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/button.tsx",
+      "upstreamPath": "ui/button.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "e3345d985d14c33e3cb9d8c45cf973807326c944",
+      "localPath": "web/src/components/ui/button.tsx",
+      "mode": "verbatim",
+      "sha256": "79dd6f75f8136394442202d6b8b922fb269eaad0a5dba579397c9d5b41f893bb",
+      "upstreamSha256": "79dd6f75f8136394442202d6b8b922fb269eaad0a5dba579397c9d5b41f893bb"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/empty.tsx",
+      "upstreamPath": "ui/empty.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "bfd524fb206070222851692210a62144f44c0611",
+      "localPath": "web/src/components/ui/empty.tsx",
+      "mode": "verbatim",
+      "sha256": "54f529ccf72c18c4b5abd5586a7cf1f2a4c8d207aac366029d66ed095cb2965d",
+      "upstreamSha256": "54f529ccf72c18c4b5abd5586a7cf1f2a4c8d207aac366029d66ed095cb2965d"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/field.tsx",
+      "upstreamPath": "ui/field.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "9107ef025c35eb5b19c023688743e27e3825e70d",
+      "localPath": "web/src/components/ui/field.tsx",
+      "mode": "verbatim",
+      "sha256": "4a4d17fcb933513f637f9f7e2daf5d8348f7de086b29738337dec7e6dd1819a0",
+      "upstreamSha256": "4a4d17fcb933513f637f9f7e2daf5d8348f7de086b29738337dec7e6dd1819a0"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/input.tsx",
+      "upstreamPath": "ui/input.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "ddb9b315e34245addded54b1848bb32c80c418cc",
+      "localPath": "web/src/components/ui/input.tsx",
+      "mode": "verbatim",
+      "sha256": "0c9457181f6ddc80969bcf854e92c362903a55b6e889fbef3fd85343ecc4af5b",
+      "upstreamSha256": "0c9457181f6ddc80969bcf854e92c362903a55b6e889fbef3fd85343ecc4af5b"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/label.tsx",
+      "upstreamPath": "ui/label.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "5aff7469c384001a3f1b49cc5cf8871b10f10386",
+      "localPath": "web/src/components/ui/label.tsx",
+      "mode": "verbatim",
+      "sha256": "344bde38b8531615dbf8e14af3895517c24d8ef6ce56ddeda7e2e6fe4b5d0c00",
+      "upstreamSha256": "344bde38b8531615dbf8e14af3895517c24d8ef6ce56ddeda7e2e6fe4b5d0c00"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/radio-group.tsx",
+      "upstreamPath": "ui/radio-group.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "2dc7ec59fa0af08a9274410db47b03cb78f629eb",
+      "localPath": "web/src/components/ui/radio-group.tsx",
+      "mode": "verbatim",
+      "sha256": "cfc4f99ee68be2fbbd70de3ffad82e1462d5e8e0bb0aecfd190a4f5115325862",
+      "upstreamSha256": "cfc4f99ee68be2fbbd70de3ffad82e1462d5e8e0bb0aecfd190a4f5115325862"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/select.tsx",
+      "upstreamPath": "ui/select.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "8058e266346ddf79b0b156a7c5d07e716d5792ee",
+      "localPath": "web/src/components/ui/select.tsx",
+      "mode": "verbatim",
+      "sha256": "962830436bd0b7ee50e556f0747e277d6a86869ed27d167516346b15f26309d8",
+      "upstreamSha256": "962830436bd0b7ee50e556f0747e277d6a86869ed27d167516346b15f26309d8"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/separator.tsx",
+      "upstreamPath": "ui/separator.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "6a553b978c11cf82c93817b2d0dde1db0e555835",
+      "localPath": "web/src/components/ui/separator.tsx",
+      "mode": "verbatim",
+      "sha256": "ad7d5403fe337160e41dbf04147896e448ae3a747b8d06660d627d74d60021bc",
+      "upstreamSha256": "ad7d5403fe337160e41dbf04147896e448ae3a747b8d06660d627d74d60021bc"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/sheet.tsx",
+      "upstreamPath": "ui/sheet.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "9f7ae5fed9763e9ddbe38692fbf5b3f67224b731",
+      "localPath": "web/src/components/ui/sheet.tsx",
+      "mode": "verbatim",
+      "sha256": "ea473d38a26a9b0b879e5a13139899ad45e9782e896b3fa205c7763a6c506876",
+      "upstreamSha256": "ea473d38a26a9b0b879e5a13139899ad45e9782e896b3fa205c7763a6c506876"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/sidebar.tsx",
+      "upstreamPath": "ui/sidebar.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "31cafe4cb8aa5127e050d883afb395b626565d2c",
+      "localPath": "web/src/components/ui/sidebar.tsx",
+      "mode": "verbatim",
+      "sha256": "2ba1a9b9422f4172373f4cd0587b675d2331a41f4fa68f65dab2b23ca98fd9d2",
+      "upstreamSha256": "2ba1a9b9422f4172373f4cd0587b675d2331a41f4fa68f65dab2b23ca98fd9d2"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/skeleton.tsx",
+      "upstreamPath": "ui/skeleton.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "a1ceb0545be73aa39a336271ecb69ed6aa69a64d",
+      "localPath": "web/src/components/ui/skeleton.tsx",
+      "mode": "verbatim",
+      "sha256": "f51ce0fcd31e5c31437382e80ea0af94b4fc3d64221d27091d36824546780a43",
+      "upstreamSha256": "f51ce0fcd31e5c31437382e80ea0af94b4fc3d64221d27091d36824546780a43"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/slider.tsx",
+      "upstreamPath": "ui/slider.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "f1a421ef3f90344dac8b53d92e58ba7d2ae0cd13",
+      "localPath": "web/src/components/ui/slider.tsx",
+      "mode": "verbatim",
+      "sha256": "6a531f6182de6efec2c25d30a7626b66cbf11cf52d505e47f907124934f7188e",
+      "upstreamSha256": "6a531f6182de6efec2c25d30a7626b66cbf11cf52d505e47f907124934f7188e"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/switch.tsx",
+      "upstreamPath": "ui/switch.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "c45932afe4e484c900aa916e81d0e0d67137bedc",
+      "localPath": "web/src/components/ui/switch.tsx",
+      "mode": "verbatim",
+      "sha256": "743676f33f823ffa8008bbd5eb94cb68e227599447d60e132a202291a395f8e4",
+      "upstreamSha256": "743676f33f823ffa8008bbd5eb94cb68e227599447d60e132a202291a395f8e4"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/tabs.tsx",
+      "upstreamPath": "ui/tabs.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "6e174747a509f8a906ce9cfb27bc2c7603f2b6b5",
+      "localPath": "web/src/components/ui/tabs.tsx",
+      "mode": "verbatim",
+      "sha256": "e1df6e2f95ece373ca909c1d54b8ba8cf4c47dd425c1784bbb9a01c38dd0936b",
+      "upstreamSha256": "e1df6e2f95ece373ca909c1d54b8ba8cf4c47dd425c1784bbb9a01c38dd0936b"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/tooltip.tsx",
+      "upstreamPath": "ui/tooltip.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "c8c47cb146e6167c68f74f8a2f2f0c7c2d06ec72",
+      "localPath": "web/src/components/ui/tooltip.tsx",
+      "mode": "verbatim",
+      "sha256": "611e4305879b2773eafe76bf3c5caa69d8e47367fd97887a71634a27828f4433",
+      "upstreamSha256": "611e4305879b2773eafe76bf3c5caa69d8e47367fd97887a71634a27828f4433"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/hooks/use-mobile.ts",
+      "upstreamPath": "hooks/use-mobile.ts",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "2b0fe1dfef3b17850bbac040665f514a8ffd0f15",
+      "localPath": "web/src/hooks/use-mobile.ts",
+      "mode": "verbatim",
+      "sha256": "ad0936f84f1df79d3697bfbff9c18f8ad58431c1cbaf2359c6a853b0fcc9f28b",
+      "upstreamSha256": "ad0936f84f1df79d3697bfbff9c18f8ad58431c1cbaf2359c6a853b0fcc9f28b"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/lib/utils.ts",
+      "upstreamPath": "lib/utils.ts",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "f815ded4d7865413255682a8b1f8f95beb620d0a",
+      "localPath": "web/src/lib/utils.ts",
+      "mode": "verbatim",
+      "sha256": "14300d758170c270c75b057f38fedb3793a5920ea872f0477e29fb131185e8a7",
+      "upstreamSha256": "14300d758170c270c75b057f38fedb3793a5920ea872f0477e29fb131185e8a7"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/blocks/sidebar-07/components/app-sidebar.tsx",
+      "upstreamPath": "blocks/sidebar-07/components/app-sidebar.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "165e79eb23450f8b00f5fbbdec04f31ade3d0fe2",
+      "localPath": "web/src/app/app-sidebar.tsx",
+      "mode": "adapted",
+      "sha256": "8df3728fedd80731068f2440f3d02d013d479f68a5241f35c7aee7d8804569d0",
+      "upstreamSha256": "5e13132f2be761929f84fb8b128f87791945555e846505ee5e95f7048434272d",
+      "approvedAt": "2026-11-10"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/blocks/sidebar-07/components/nav-main.tsx",
+      "upstreamPath": "blocks/sidebar-07/components/nav-main.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "25b99a8a0c30609e583159bc5a5047568bc675eb",
+      "localPath": "web/src/app/app-nav.tsx",
+      "mode": "adapted",
+      "sha256": "4a6903d7cde8600a387eaa3bbd0d4a0fdd7491e77febaa8ff0087c197385df94",
+      "upstreamSha256": "0ef916dc1342b184341e5af5513e0d0d7ed17b19552e33bd715def4eefb74538",
+      "approvedAt": "2026-11-09"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/dialog.tsx",
+      "upstreamPath": "ui/dialog.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "ccadf4a85bf6398d52314b112600f796fc97db97",
+      "localPath": "web/src/components/ui/dialog.tsx",
+      "mode": "verbatim",
+      "sha256": "2ade6074e5fad0a4eb171ead44c43d3301a3c83d186d7236fb1fdbea80ee556b",
+      "upstreamSha256": "2ade6074e5fad0a4eb171ead44c43d3301a3c83d186d7236fb1fdbea80ee556b"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/drawer.tsx",
+      "upstreamPath": "ui/drawer.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "4e416683964bdef2c52c5dcd597ab0cb8f4c015b",
+      "localPath": "web/src/components/ui/drawer.tsx",
+      "mode": "verbatim",
+      "sha256": "63f04fe50a4bf29b56b0f5e2944c6efe980b895f589923659cc2e8ecc90b16c6",
+      "upstreamSha256": "63f04fe50a4bf29b56b0f5e2944c6efe980b895f589923659cc2e8ecc90b16c6"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/progress.tsx",
+      "upstreamPath": "ui/progress.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "ac48e2e5e25d507fcc68df5f95717b8a3df71867",
+      "localPath": "web/src/components/ui/progress.tsx",
+      "mode": "verbatim",
+      "sha256": "e012e1f7e6e66d11229d1233eccf91954edcd9179b418ff1d114dc651b86fd35",
+      "upstreamSha256": "e012e1f7e6e66d11229d1233eccf91954edcd9179b418ff1d114dc651b86fd35"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/badge.tsx",
+      "upstreamPath": "ui/badge.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "1a94cc539326e26227271a0b3599be99e0e55fb6",
+      "localPath": "web/src/components/ui/badge.tsx",
+      "mode": "verbatim",
+      "sha256": "13a9380dfff853ee730c14a52df49f22aecd31f40f2998d7c1e7ec458b6e1650",
+      "upstreamSha256": "13a9380dfff853ee730c14a52df49f22aecd31f40f2998d7c1e7ec458b6e1650"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/item.tsx",
+      "upstreamPath": "ui/item.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "22bc2521ad4fa762b0de948f3f9d53bc217f1069",
+      "localPath": "web/src/components/ui/item.tsx",
+      "mode": "verbatim",
+      "sha256": "9ade8136f010284b7ec0142f52606616dd4b23798012e75a9fc6aac1fb2d792e",
+      "upstreamSha256": "9ade8136f010284b7ec0142f52606616dd4b23798012e75a9fc6aac1fb2d792e"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/aspect-ratio.tsx",
+      "upstreamPath": "ui/aspect-ratio.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "57e38fa96f9c0cb767d7b8de0d6dbc171d1b921a",
+      "localPath": "web/src/components/ui/aspect-ratio.tsx",
+      "mode": "verbatim",
+      "sha256": "b1c157886236782cb92d8fbcd4749532aaf6d8aabefd6e157ca40358f902f407",
+      "upstreamSha256": "b1c157886236782cb92d8fbcd4749532aaf6d8aabefd6e157ca40358f902f407"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/scroll-area.tsx",
+      "upstreamPath": "ui/scroll-area.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "4542a3e26d68a524dc5e504156eb09dd3440a3f5",
+      "localPath": "web/src/components/ui/scroll-area.tsx",
+      "mode": "verbatim",
+      "sha256": "8b73bb9be51300079c7f561bafbe43ee10f6f464cf39c8c1b25123cd4edb94dd",
+      "upstreamSha256": "8b73bb9be51300079c7f561bafbe43ee10f6f464cf39c8c1b25123cd4edb94dd"
+    },
+    {
+      "sourcePath": "apps/v4/registry/new-york-v4/ui/card.tsx",
+      "upstreamPath": "ui/card.tsx",
+      "commit": "8ab27715521cbd4f87ae6886cd989cbb678f6de7",
+      "blob": "6aebd4cf612dfa24d40ffdf357c6f6363e144d6a",
+      "localPath": "web/src/components/ui/card.tsx",
+      "mode": "verbatim",
+      "sha256": "ef8305b12c3112dab42a4708b41b1ebcc042fa5ab4c20f039da8d45b09ed5059",
+      "upstreamSha256": "ef8305b12c3112dab42a4708b41b1ebcc042fa5ab4c20f039da8d45b09ed5059"
+    }
+  ]
+}

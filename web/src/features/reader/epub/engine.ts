@@ -1,0 +1,1019 @@
+import * as CFI from "../../../vendor/foliate-js/epubcfi.js"
+import {
+  View,
+  type FoliateLoadDetail,
+  type FoliateRelocateDetail,
+} from "../../../vendor/foliate-js/view.js"
+
+import type {
+  ReaderEngineResult,
+  ReaderCapabilities,
+  ReaderViewportMetrics,
+} from "../shell/engine"
+import type {
+  EpubReaderManifest,
+  ReaderLocation,
+  ReaderManifest,
+} from "../types"
+
+import {
+  ManifestEpubBook,
+  fixedLayoutReason,
+} from "./book"
+import {
+  buildChapter,
+  createErrorChapter,
+  parseBuiltChapter,
+  type BuiltChapter,
+} from "./chapter"
+import { anchorForPayload, locationFromRelocate, resolvePayloadIndex } from "./location"
+import {
+  EpubResourceClient,
+  isAbortError,
+} from "./resources"
+import { buildReaderCss, computeLayout, defaultSettings, mergeSettings } from "./settings"
+import {
+  epubResourceKey,
+  resourceKeyId,
+} from "../cache/resource-key"
+import type { ReaderCacheRuntime } from "../session/reader-cache-runtime"
+import {
+  EpubReaderError,
+  type EpubReaderEngine,
+  type EpubContentInput,
+  type EpubReaderEngineOptions,
+  type EpubReaderSettings,
+} from "./types"
+
+const EPUB_UNAVAILABLE_FEATURES = [
+  "toc",
+  "bookmarks",
+  "settings",
+  "text-selection",
+] as const
+
+interface ChapterLoadState {
+  abort: AbortController
+  token: number
+}
+
+function defaultCapabilities(): ReaderCapabilities {
+  return {
+    canRender: true,
+    canNavigate: true,
+    canSearch: false,
+    canZoom: true,
+    features: [...EPUB_UNAVAILABLE_FEATURES],
+    unavailableReason: "",
+  }
+}
+
+function abortError(): DOMException {
+  return new DOMException("操作已取消", "AbortError")
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof EpubReaderError) {
+    return error.message
+  }
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message
+  }
+  return "未知错误，请重试。"
+}
+
+function fail(reason: string, retryable = true): ReaderEngineResult {
+  return { ok: false, reason, retryable }
+}
+
+export class EpubEngine implements EpubReaderEngine {
+  readonly format = "epub" as const
+  readonly capabilities: ReaderCapabilities
+
+  private settings: EpubReaderSettings
+  private initialLocation: ReaderLocation | null
+  private manifest: EpubReaderManifest | null = null
+  private host: HTMLElement | null = null
+  private view: View | null = null
+  private book: ManifestEpubBook | null = null
+  private resources: EpubResourceClient | null = null
+  private mountAbort: AbortController | null = null
+  private mounted = false
+  private disposed = false
+  private viewport: ReaderViewportMetrics | null = null
+  private listeners = new Set<(location: ReaderLocation) => void>()
+  private contentListeners = new Set<(input: EpubContentInput) => void>()
+  private contentDocuments = new Map<Document, { index: number; cleanup: () => void }>()
+  private lastLocation: ReaderLocation | null = null
+  private lastEmittedKey = ""
+  private chapterLoads = new Map<number, ChapterLoadState>()
+  private chapterTokens = new Map<number, number>()
+  private builtChapters = new Map<number, BuiltChapter>()
+  private chapterErrors = new Map<number, string>()
+  private overlay: HTMLElement | null = null
+  private navigationQueue: Promise<void> = Promise.resolve()
+  private navigationEpoch = 0
+  private reflowTimer: number | null = null
+  private readonly cache: ReaderCacheRuntime | null
+  private prefetchIndex = -1
+  private prefetchNextIndex = -1
+
+  constructor(options?: EpubReaderEngineOptions) {
+    this.settings = defaultSettings(options?.settings)
+    this.initialLocation = options?.initialLocation ?? null
+    this.cache = options?.cache ?? null
+    this.capabilities = defaultCapabilities()
+  }
+
+  subscribeContentInput(listener: (input: EpubContentInput) => void): () => void {
+    this.contentListeners.add(listener)
+    return () => { this.contentListeners.delete(listener) }
+  }
+
+  private bindContentDocument(doc: Document, index: number): void {
+    if (this.contentDocuments.has(doc)) return
+    for (const entry of [...this.contentDocuments.values()]) {
+      if (entry.index === index) entry.cleanup()
+    }
+    const emit = (input: EpubContentInput) => {
+      if (!this.mounted || this.disposed || !input.event.isTrusted) return
+      for (const listener of this.contentListeners) listener(input)
+    }
+    const keydown = (event: KeyboardEvent) => emit({ kind: "keydown", event, document: doc })
+    const pointer = (event: PointerEvent) => {
+      const frame = doc.defaultView?.frameElement
+      if (frame === null || frame === undefined) return
+      const rect = frame.getBoundingClientRect()
+      emit({ kind: event.type as "pointerdown" | "pointerup" | "pointercancel", event, document: doc,
+        clientX: rect.left + event.clientX * rect.width / Math.max(1, doc.documentElement.clientWidth),
+        clientY: rect.top + event.clientY * rect.height / Math.max(1, doc.documentElement.clientHeight) })
+    }
+    const cleanup = () => {
+      doc.removeEventListener("keydown", keydown)
+      doc.removeEventListener("pointerdown", pointer)
+      doc.removeEventListener("pointerup", pointer)
+      doc.removeEventListener("pointercancel", pointer)
+      doc.defaultView?.removeEventListener("pagehide", cleanup)
+      this.contentDocuments.delete(doc)
+    }
+    this.contentDocuments.set(doc, { index, cleanup })
+    doc.addEventListener("keydown", keydown)
+    doc.addEventListener("pointerdown", pointer)
+    doc.addEventListener("pointerup", pointer)
+    doc.addEventListener("pointercancel", pointer)
+    doc.defaultView?.addEventListener("pagehide", cleanup, { once: true })
+  }
+
+  getSettings(): EpubReaderSettings {
+    return { ...this.settings }
+  }
+
+  getLocation(): ReaderLocation | null {
+    return this.lastLocation
+  }
+
+  applySettings(patch: Partial<EpubReaderSettings>): void {
+    const previous = this.settings
+    const previousPublisher = this.settings.publisherCSSMode
+    this.settings = mergeSettings(this.settings, patch)
+    const layoutKeys: (keyof EpubReaderSettings)[] = [
+      "fontFamily",
+      "fontSize",
+      "lineHeight",
+      "paragraphSpacing",
+      "textIndent",
+      "align",
+      "horizontalMargin",
+      "verticalMargin",
+      "maxWidth",
+      "pagination",
+      "columns",
+      "publisherCSSMode",
+    ]
+    const layoutChanged = layoutKeys.some(
+      (key) => previous[key] !== this.settings[key],
+    )
+    if (layoutChanged) {
+      // 改字号/排版只失效 L2 渲染对象，L1/L3 网络资源保持可复用。
+      this.cache?.render.clear()
+    }
+    if (this.view === null) {
+      return
+    }
+    const reflowTarget = this.lastLocation
+    this.applyViewAttributes()
+    this.applyReaderStyles()
+    if (previousPublisher !== this.settings.publisherCSSMode) {
+      const index = this.currentIndex()
+      if (index >= 0) {
+        void this.rebuildSection(index)
+      }
+      return
+    }
+    this.scheduleReflowRestore(reflowTarget)
+  }
+
+  async mount(
+    host: HTMLElement,
+    manifest: ReaderManifest,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.disposed) {
+      throw new EpubReaderError("阅读引擎已释放，不能继续挂载。", false)
+    }
+    if (manifest.format !== "epub") {
+      throw new EpubReaderError("当前引擎只支持 EPUB。", false)
+    }
+    if (signal.aborted) {
+      throw abortError()
+    }
+    if (this.mounted) {
+      this.unmount()
+    }
+    Object.assign(this.capabilities, defaultCapabilities())
+    const fixedReason = fixedLayoutReason(manifest)
+    if (fixedReason !== null) {
+      this.capabilities.canRender = false
+      this.capabilities.canNavigate = false
+      this.capabilities.features = []
+      this.capabilities.unavailableReason = fixedReason
+      throw new EpubReaderError(fixedReason, false)
+    }
+    this.manifest = manifest
+    this.host = host
+    this.mounted = true
+    this.lastLocation = null
+    this.lastEmittedKey = ""
+    this.mountAbort = new AbortController()
+    const onAbort = () => {
+      this.mountAbort?.abort()
+      this.unmount()
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    try {
+      this.resources = new EpubResourceClient(manifest, {
+        cache: this.cache,
+      })
+      this.book = new ManifestEpubBook(manifest, {
+        loadChapter: (index) => this.loadChapter(index),
+        unloadChapter: (index) => this.unloadChapter(index),
+        createDocument: (index) => this.createDocument(index),
+      })
+      const view = new View()
+      this.view = view
+      view.style.width = "100%"
+      view.style.height = "100%"
+      view.style.display = "block"
+      view.addEventListener("relocate", this.handleRelocate)
+      view.addEventListener("load", this.handleLoad)
+      view.addEventListener("external-link", this.handleExternalLink)
+      host.replaceChildren(view)
+      this.applyViewAttributes()
+      await view.open(this.book)
+      if (signal.aborted) {
+        throw abortError()
+      }
+      this.applyViewAttributes()
+      this.applyReaderStyles()
+      const initial = this.initialLocation
+      await view.init({
+        lastLocation:
+          initial !== null && initial.locatorType === "epub-cfi"
+            ? initial.locatorPayload.cfi
+            : undefined,
+        showTextStart: initial === null,
+      })
+      if (signal.aborted) {
+        throw abortError()
+      }
+      if (initial !== null) {
+        const result = await this.restore(initial)
+        if (!result.ok) {
+          this.showOverlay(result.reason)
+        }
+      }
+      this.applyViewAttributes()
+      this.applyReaderStyles()
+      this.prefetchAdjacent(this.currentIndex(), 0)
+    } catch (error) {
+      if (isAbortError(error) || signal.aborted) {
+        this.unmount()
+        return
+      }
+      this.unmount()
+      throw error
+    }
+  }
+
+  unmount(): void {
+    this.mounted = false
+    for (const entry of [...this.contentDocuments.values()]) entry.cleanup()
+    this.mountAbort?.abort()
+    this.mountAbort = null
+    if (this.reflowTimer !== null) {
+      window.clearTimeout(this.reflowTimer)
+      this.reflowTimer = null
+    }
+    for (const state of this.chapterLoads.values()) {
+      state.abort.abort()
+    }
+    this.chapterLoads.clear()
+    const view = this.view
+    this.view = null
+    if (view !== null) {
+      view.removeEventListener("relocate", this.handleRelocate)
+      view.removeEventListener("load", this.handleLoad)
+      view.removeEventListener("external-link", this.handleExternalLink)
+      try {
+        view.close()
+      } catch {
+        // 未完成 open 的 view 可能没有 renderer；清理仍需继续。
+      }
+      view.remove()
+    }
+    this.hideOverlay()
+    this.releaseAllChapters()
+    this.resources?.clear()
+    this.resources = null
+    this.book = null
+    this.manifest = null
+    this.host = null
+    this.chapterErrors.clear()
+    this.prefetchIndex = -1
+    this.prefetchNextIndex = -1
+  }
+
+  dispose(): void {
+    if (this.disposed) {
+      return
+    }
+    this.unmount()
+    this.disposed = true
+    this.listeners.clear()
+    this.contentListeners.clear()
+  }
+
+  async restore(location: ReaderLocation): Promise<ReaderEngineResult> {
+    return this.enqueueNavigation(async (epoch) => {
+      if (epoch !== this.navigationEpoch) {
+        return fail("位置已被新的导航取代。", true)
+      }
+      if (!this.ensureMounted()) {
+        return fail("阅读引擎尚未挂载。", true)
+      }
+      if (location.locatorType === "epub-cfi") {
+        const book = this.book
+        const view = this.view
+        if (book === null || view === null) {
+          return fail("阅读引擎尚未就绪。", true)
+        }
+        const resolved = book.resolveCFI(location.locatorPayload.cfi)
+        if (resolved !== null) {
+          const moved = await view.goTo(location.locatorPayload.cfi)
+          if (
+            moved !== undefined &&
+            !this.chapterErrors.has(resolved.index)
+          ) {
+            return { ok: true }
+          }
+        }
+        return this.goToAnchor({
+          ...location.locatorPayload,
+          anchorId: null,
+        })
+      }
+      if (location.locatorType === "epub-anchor") {
+        return this.goToAnchor(location.locatorPayload)
+      }
+      return fail("当前引擎不接受该定位类型。", false)
+    })
+  }
+
+  async navigateTo(location: ReaderLocation): Promise<ReaderEngineResult> {
+    if (location.locatorType !== "epub-cfi" && location.locatorType !== "epub-anchor") {
+      return fail("当前引擎不接受该定位类型。", false)
+    }
+    const result = await this.restore(location)
+    if (result.ok && this.lastLocation === null) {
+      this.emitLocation(location)
+    }
+    return result
+  }
+
+  async advance(direction: "previous" | "next"): Promise<ReaderEngineResult> {
+    if (!this.ensureMounted()) {
+      return fail("阅读引擎尚未挂载。", true)
+    }
+    const view = this.view
+    if (view === null) {
+      return fail("阅读引擎尚未就绪。", true)
+    }
+    try {
+      if (direction === "next") {
+        await view.next()
+      } else {
+        await view.prev()
+      }
+      return { ok: true }
+    } catch (error) {
+      if (isAbortError(error)) {
+        return fail("翻页已取消。", true)
+      }
+      return fail(describeError(error), true)
+    }
+  }
+
+  subscribeLocation(listener: (location: ReaderLocation) => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  handleViewportChange(metrics: ReaderViewportMetrics): void {
+    this.viewport = metrics
+    if (this.view === null) {
+      return
+    }
+    const reflowTarget = this.lastLocation
+    this.applyViewAttributes()
+    if (this.reflowTimer !== null) {
+      window.clearTimeout(this.reflowTimer)
+    }
+    this.reflowTimer = window.setTimeout(() => {
+      this.reflowTimer = null
+      const view = this.view
+      if (view === null) {
+        return
+      }
+      try {
+        view.renderer.render()
+      } catch {
+        // renderer 尚未完成首章加载时没有可重排内容。
+      }
+      this.scheduleReflowRestore(reflowTarget)
+    }, 120)
+  }
+
+  async retrySection(index?: number): Promise<ReaderEngineResult> {
+    const target = index ?? this.currentIndex()
+    if (target < 0) {
+      return fail("没有可重试的章节。", true)
+    }
+    return this.enqueueNavigation(async (epoch) => {
+      if (epoch !== this.navigationEpoch) {
+        return fail("重试已被新的导航取代。", true)
+      }
+      if (!this.ensureMounted()) {
+        return fail("阅读引擎尚未挂载。", true)
+      }
+      await this.rebuildSection(target)
+      return this.chapterErrors.has(target)
+        ? fail(this.chapterErrors.get(target) ?? "章节仍未能加载。", true)
+        : { ok: true }
+    })
+  }
+
+  private ensureMounted(): boolean {
+    return this.mounted && this.view !== null && this.book !== null
+  }
+
+  private enqueueNavigation(
+    operation: (epoch: number) => Promise<ReaderEngineResult>,
+  ): Promise<ReaderEngineResult> {
+    const epoch = ++this.navigationEpoch
+    const run = this.navigationQueue.then(
+      () => operation(epoch),
+      () => operation(epoch),
+    )
+    this.navigationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async goToAnchor(
+    payload: {
+      spineIndex: number
+      resourceId: string
+      href: string
+      anchorId: string | null
+      textQuote: { exact: string; prefix: string; suffix: string } | null
+      chapterProgress: number
+    },
+  ): Promise<ReaderEngineResult> {
+    const book = this.book
+    const view = this.view
+    if (book === null || view === null) {
+      return fail("阅读引擎尚未就绪。", true)
+    }
+    const index = resolvePayloadIndex(book, payload)
+    if (index < 0) {
+      return fail("定位指向的章节不在当前清单中。", false)
+    }
+    try {
+      await view.renderer.goTo({
+        index,
+        anchor: anchorForPayload(payload),
+      })
+      if (this.chapterErrors.has(index)) {
+        return fail(this.chapterErrors.get(index) ?? "章节加载失败。", true)
+      }
+      return { ok: true }
+    } catch (error) {
+      return fail(describeError(error), true)
+    }
+  }
+
+  private currentIndex(): number {
+    const contents = this.view?.renderer?.getContents?.() ?? []
+    const index = contents[0]?.index
+    if (typeof index === "number" && index >= 0) {
+      return index
+    }
+    const location = this.lastLocation
+    if (
+      location !== null &&
+      (location.locatorType === "epub-cfi" ||
+        location.locatorType === "epub-anchor")
+    ) {
+      return location.locatorPayload.spineIndex
+    }
+    return -1
+  }
+
+  private async loadChapter(index: number): Promise<string> {
+    const manifest = this.manifest
+    const resources = this.resources
+    if (manifest === null || resources === null) {
+      const fallback = createErrorChapter("阅读引擎尚未挂载。")
+      return fallback.objectUrl
+    }
+    const token = (this.chapterTokens.get(index) ?? 0) + 1
+    this.chapterTokens.set(index, token)
+    this.abortChapter(index)
+    const controller = new AbortController()
+    this.chapterLoads.set(index, { abort: controller, token })
+    for (const [otherIndex, state] of this.chapterLoads) {
+      if (otherIndex !== index) {
+        state.abort.abort()
+        this.chapterLoads.delete(otherIndex)
+      }
+    }
+    try {
+      const built = await buildChapter({
+        manifest,
+        resources,
+        index,
+        publisherCssMode: this.settings.publisherCSSMode,
+        signal: controller.signal,
+      })
+      if (
+        controller.signal.aborted ||
+        token !== this.chapterTokens.get(index)
+      ) {
+        this.releaseBuilt(built)
+        throw abortError()
+      }
+      const previous = this.builtChapters.get(index)
+      if (previous !== undefined) {
+        this.releaseBuilt(previous)
+      }
+      this.builtChapters.set(index, built)
+      this.chapterErrors.delete(index)
+      if (this.currentIndex() === index) {
+        this.hideOverlay()
+      }
+      return built.objectUrl
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
+      const message = describeError(error)
+      this.chapterErrors.set(index, message)
+      this.showOverlay(message, index)
+      const previous = this.builtChapters.get(index)
+      if (previous !== undefined) {
+        this.releaseBuilt(previous)
+      }
+      const fallback = createErrorChapter(message)
+      this.builtChapters.set(index, fallback)
+      return fallback.objectUrl
+    } finally {
+      const state = this.chapterLoads.get(index)
+      if (state?.token === token) {
+        this.chapterLoads.delete(index)
+      }
+    }
+  }
+
+  private abortChapter(index: number): void {
+    const state = this.chapterLoads.get(index)
+    if (state !== undefined) {
+      state.abort.abort()
+      this.chapterLoads.delete(index)
+    }
+  }
+
+  private unloadChapter(index: number): void {
+    for (const entry of [...this.contentDocuments.values()]) { if (entry.index === index) entry.cleanup() }
+    this.chapterTokens.set(index, (this.chapterTokens.get(index) ?? 0) + 1)
+    this.abortChapter(index)
+    const built = this.builtChapters.get(index)
+    if (built !== undefined) {
+      this.releaseBuilt(built)
+      this.builtChapters.delete(index)
+    }
+    this.chapterErrors.delete(index)
+  }
+
+  private releaseBuilt(built: BuiltChapter): void {
+    for (const url of built.urls) {
+      URL.revokeObjectURL(url)
+    }
+  }
+
+  /**
+   * 当前可见章节由 buildChapter 以 critical 请求；上一章立即预取，下一章在
+   * 章节后段（>=80%）再预取，避免打开即下载整段相邻内容。导航后取消离开窗口
+   * 的 prefetch，避免快速翻页堆积。
+   */
+  private prefetchAdjacent(index: number, chapterProgress: number): void {
+    const cache = this.cache
+    const manifest = this.manifest
+    const resources = this.resources
+    if (cache === null || manifest === null || resources === null) {
+      return
+    }
+    if (index < 0) {
+      return
+    }
+    if (index !== this.prefetchIndex) {
+      this.prefetchIndex = index
+      this.prefetchNextIndex = -1
+    }
+    const targets = new Set<number>([index - 1])
+    if (chapterProgress >= 0.8 && this.prefetchNextIndex !== index) {
+      targets.add(index + 1)
+      this.prefetchNextIndex = index
+    }
+    const keep: string[] = []
+    for (const target of targets) {
+      const section = manifest.formatData.spine[target]
+      if (section === undefined) {
+        continue
+      }
+      const entry = resources.bySpineItem(section)
+      if (entry === null) {
+        continue
+      }
+      keep.push(
+        resourceKeyId(
+          epubResourceKey(
+            manifest.bookId,
+            manifest.fileVersion,
+            entry.resourceId,
+            entry.href,
+          ),
+        ),
+      )
+      void resources.prefetch(entry)
+    }
+    cache.scheduler.cancelObsolete(keep, { priorities: ["prefetch"] })
+  }
+
+  private releaseAllChapters(): void {
+    for (const built of this.builtChapters.values()) {
+      this.releaseBuilt(built)
+    }
+    this.builtChapters.clear()
+    this.chapterTokens.clear()
+  }
+
+  private createDocument(index: number): Promise<Document> {
+    const built = this.builtChapters.get(index)
+    if (built !== undefined) {
+      return parseBuiltChapter(built)
+    }
+    return Promise.reject(new Error("章节尚未加载"))
+  }
+
+  private async rebuildSection(index: number): Promise<void> {
+    const failed = this.chapterErrors.has(index)
+    this.unloadChapter(index)
+    this.hideOverlay()
+    if (this.view === null) {
+      return
+    }
+    const location = failed
+      ? this.anchorLocation(index)
+      : this.lastLocation ?? this.anchorLocation(index)
+    try {
+      await this.reopenView(location)
+    } catch (error) {
+      this.showOverlay(describeError(error), index)
+    }
+  }
+
+  private anchorLocation(index: number): ReaderLocation | null {
+    const section = this.manifest?.formatData.spine[index]
+    if (section === undefined) {
+      return null
+    }
+    return {
+      locatorType: "epub-anchor",
+      progressPercent: 0,
+      locatorPayload: {
+        locatorVersion: 1,
+        spineIndex: index,
+        resourceId: section.resourceId,
+        href: section.href,
+        anchorId: null,
+        chapterProgress: 0,
+        textQuote: null,
+      },
+    }
+  }
+
+  private async reopenView(location: ReaderLocation | null): Promise<void> {
+    const view = this.view
+    const book = this.book
+    const host = this.host
+    if (view === null || book === null || host === null) {
+      return
+    }
+    view.removeEventListener("relocate", this.handleRelocate)
+    view.removeEventListener("load", this.handleLoad)
+    view.removeEventListener("external-link", this.handleExternalLink)
+    try {
+      view.close()
+    } catch {
+      // 损坏的 renderer 仍需重建。
+    }
+    view.remove()
+    const next = new View()
+    this.view = next
+    next.style.width = "100%"
+    next.style.height = "100%"
+    next.style.display = "block"
+    next.addEventListener("relocate", this.handleRelocate)
+    next.addEventListener("load", this.handleLoad)
+    next.addEventListener("external-link", this.handleExternalLink)
+    host.replaceChildren(next)
+    this.applyViewAttributes()
+    await next.open(book)
+    this.applyViewAttributes()
+    this.applyReaderStyles()
+    await next.init({
+      lastLocation:
+        location !== null && location.locatorType === "epub-cfi"
+          ? location.locatorPayload.cfi
+          : undefined,
+      showTextStart: location === null,
+    })
+    if (location !== null && location.locatorType === "epub-anchor") {
+      const index = this.book?.indexForPayload(
+        location.locatorPayload.spineIndex,
+        location.locatorPayload.resourceId,
+        location.locatorPayload.href,
+      )
+      if (index !== undefined && index >= 0) {
+        await next.renderer.goTo({
+          index,
+          anchor: anchorForPayload(location.locatorPayload),
+        })
+      }
+    }
+  }
+
+  private scheduleReflowRestore(target?: ReaderLocation | null): void {
+    if (this.reflowTimer !== null) {
+      window.clearTimeout(this.reflowTimer)
+    }
+    const location = target === undefined ? this.lastLocation : target
+    this.reflowTimer = window.setTimeout(() => {
+      this.reflowTimer = null
+      const view = this.view
+      if (view === null) {
+        return
+      }
+      try {
+        view.renderer.render()
+      } catch {
+        return
+      }
+      if (location === null) {
+        return
+      }
+      void this.restore(location)
+    }, 160)
+  }
+
+  private applyViewAttributes(): void {
+    const view = this.view
+    if (view === null) {
+      return
+    }
+    const renderer = view.renderer
+    if (renderer === undefined) {
+      return
+    }
+    const hostWidth =
+      this.host?.getBoundingClientRect().width ??
+      this.viewport?.width ??
+      0
+    const hostHeight =
+      this.host?.getBoundingClientRect().height ??
+      this.viewport?.height ??
+      0
+    const width = hostWidth > 0 ? hostWidth : 720
+    const height = hostHeight > 0 ? hostHeight : 960
+    const layout = computeLayout(this.settings, width, height)
+    view.setAttribute(
+      "flow",
+      this.settings.pagination === "scroll" ? "scrolled" : "paginated",
+    )
+    if (this.settings.animation === "light") {
+      view.setAttribute("animated", "")
+    } else {
+      view.removeAttribute("animated")
+    }
+    renderer.setAttribute("flow", this.settings.pagination === "scroll" ? "scrolled" : "paginated")
+    renderer.setAttribute("margin", `${layout.margin}px`)
+    renderer.setAttribute("max-inline-size", `${layout.maxInlineSize}px`)
+    if (layout.maxBlockSize !== null) {
+      renderer.setAttribute("max-block-size", `${layout.maxBlockSize}px`)
+    } else {
+      renderer.removeAttribute("max-block-size")
+    }
+    renderer.setAttribute("max-column-count", String(layout.columns))
+    renderer.setAttribute("gap", `${layout.gapPercent}%`)
+  }
+
+  private applyReaderStyles(): void {
+    const renderer = this.view?.renderer
+    if (renderer === undefined) {
+      return
+    }
+    renderer.setStyles(["", buildReaderCss(this.settings)])
+  }
+
+  private readonly handleRelocate = (event: Event): void => {
+    const detail = (event as CustomEvent<FoliateRelocateDetail>).detail
+    const manifest = this.manifest
+    const index =
+      typeof detail.index === "number"
+        ? detail.index
+        : detail.section?.current
+    if (manifest === null || typeof index !== "number") {
+      return
+    }
+    const section = manifest.formatData.spine[index]
+    if (section === undefined) {
+      return
+    }
+    const fractions = this.view?.getSectionFractions() ?? []
+    const location = locationFromRelocate(
+      { ...detail, index },
+      {
+        index: section.index,
+        resourceId: section.resourceId,
+        href: section.href,
+        cfiBase: section.cfiBase,
+      },
+      fractions,
+    )
+    this.lastLocation = location
+    this.emitLocation(location)
+    const chapterProgress =
+      location.locatorType === "epub-cfi" ||
+      location.locatorType === "epub-anchor"
+        ? location.locatorPayload.chapterProgress
+        : 0
+    this.prefetchAdjacent(index, chapterProgress)
+  }
+
+  private readonly handleLoad = (event: Event): void => {
+    const detail = (event as CustomEvent<FoliateLoadDetail>).detail
+    this.applyReaderStyles()
+    if (detail.doc.querySelector("script, iframe, object, embed, base, form") !== null) {
+      this.showOverlay("章节包含未清理的活动内容，已停止显示。", detail.index)
+      return
+    }
+    this.bindContentDocument(detail.doc, detail.index)
+    if (this.chapterErrors.has(detail.index)) {
+      this.showOverlay(
+        this.chapterErrors.get(detail.index) ?? "章节加载失败。",
+        detail.index,
+      )
+    } else {
+      this.hideOverlay()
+    }
+  }
+
+  private readonly handleExternalLink = (event: Event): void => {
+    event.preventDefault()
+  }
+
+  private emitLocation(location: ReaderLocation): void {
+    let key: string
+    if (location.locatorType === "epub-cfi") {
+      key = `${location.locatorPayload.spineIndex}:${location.locatorPayload.cfi}:${Math.round(location.progressPercent * 10)}`
+    } else if (location.locatorType === "epub-anchor") {
+      key = `${location.locatorPayload.spineIndex}:${location.locatorPayload.chapterProgress}:${Math.round(location.progressPercent * 10)}`
+    } else {
+      key = `${location.locatorType}:${Math.round(location.progressPercent * 10)}`
+    }
+    if (key === this.lastEmittedKey) {
+      return
+    }
+    this.lastEmittedKey = key
+    for (const listener of this.listeners) {
+      try {
+        listener(location)
+      } catch {
+        // 订阅方错误不得中断阅读引擎。
+      }
+    }
+  }
+
+  private showOverlay(message: string, index?: number): void {
+    const host = this.host
+    if (host === null) {
+      return
+    }
+    this.hideOverlay()
+    const overlay = document.createElement("div")
+    overlay.setAttribute("role", "alert")
+    overlay.style.position = "absolute"
+    overlay.style.inset = "0"
+    overlay.style.display = "flex"
+    overlay.style.flexDirection = "column"
+    overlay.style.alignItems = "center"
+    overlay.style.justifyContent = "center"
+    overlay.style.gap = "0.75rem"
+    overlay.style.padding = "1.5rem"
+    overlay.style.textAlign = "center"
+    overlay.style.background = "var(--background, Canvas)"
+    overlay.style.color = "var(--foreground, CanvasText)"
+    overlay.style.zIndex = "5"
+    if (getComputedStyle(host).position === "static") {
+      host.style.position = "relative"
+    }
+    const title = document.createElement("p")
+    title.textContent = "本章节未能加载"
+    title.style.margin = "0"
+    title.style.fontWeight = "600"
+    const description = document.createElement("p")
+    description.textContent = message
+    description.style.margin = "0"
+    description.style.maxWidth = "32rem"
+    const retry = document.createElement("button")
+    retry.type = "button"
+    retry.textContent = "重试"
+    retry.style.border = "1px solid var(--border, currentColor)"
+    retry.style.borderRadius = "0.5rem"
+    retry.style.padding = "0.4rem 0.9rem"
+    retry.style.background = "var(--card, transparent)"
+    retry.style.color = "inherit"
+    retry.style.cursor = "pointer"
+    retry.addEventListener("click", () => {
+      const target = index ?? this.currentIndex()
+      if (target >= 0) {
+        void this.retrySection(target)
+      }
+    })
+    overlay.append(title, description, retry)
+    host.append(overlay)
+    this.overlay = overlay
+  }
+
+  private hideOverlay(): void {
+    this.overlay?.remove()
+    this.overlay = null
+  }
+}
+
+export function createEpubReaderEngine(
+  options?: EpubReaderEngineOptions,
+): EpubReaderEngine {
+  return new EpubEngine(options)
+}
+
+/** 供集成方在渲染前判断固定布局；不触发任何网络请求。 */
+export function isEpubFixedLayout(manifest: EpubReaderManifest): boolean {
+  return fixedLayoutReason(manifest) !== null
+}
+
+export function epubCfiIsValid(cfi: string): boolean {
+  if (!CFI.isCFI.test(cfi)) {
+    return false
+  }
+  try {
+    CFI.parse(cfi)
+    return true
+  } catch {
+    return false
+  }
+}

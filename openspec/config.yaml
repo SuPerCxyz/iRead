@@ -1,0 +1,48 @@
+schema: spec-driven
+context: |
+  iRead 是单用户自托管阅读器，React/TypeScript/Vite + Go/SQLite，单容器提供静态资源与版本化 API。
+  当前代码已有共享ReaderShell与EPUB/PDF/漫画；2026-11-10用户确认tasks阶段8四项阅读器修订，允许对应代码与隔离验证；既有41/61状态不代表完整产品验收。
+  用户已确认方案1：沿用sidebar-07和shadcn官方组件样式，替换为iRead业务内容，保留动态阅读设置。旧自主视觉决定失效；唯一样式文件只能等价集中模板样式，禁止分散硬编码；用户显式偏好走受控适配，细节见ui-design.md。
+  原文件保持原字节只读；EPUB/PDF/CBZ/CBR 均为首完整版本必需；资源接入前必须完成单管理员鉴权与内容隔离。
+  PDF 原件 Range 与 API 默认绕过通用 Service Worker 缓存；精准 locator 与 revision、双向有限缓存不能降级。
+  严禁修改或创建 AGENTS.md；未经明确授权不执行 Git 初始化、提交、推送或公网发布。
+rules:
+  proposal:
+    - 明确本轮仅tasks阶段8四项阅读器修订，不扩大整站/原件管理/引擎替换；按代码和真实验证报告局部完成。
+  specs:
+    - 用可观察行为及 WHEN/THEN 场景描述要求，并标注源需求行号与适用实施阶段。
+  design:
+    - 集中记录架构决策、共享契约、已确认模板约束与依赖门禁，不另建同用途计划；默认皮肤取ui-design固定官方源，不自主补配色/字号/间距。
+  tasks:
+    - 每项须明确负责人、依赖、写入范围和验收；文档任务依最终artifact/独立审查/文档检查勾选，未来实施另须最终代码和实际行为证据。
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

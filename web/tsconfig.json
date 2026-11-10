@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@/registry/new-york-v4/ui/*": ["./src/components/ui/*"],
+      "@/registry/new-york-v4/hooks/*": ["./src/hooks/*"],
+      "@/registry/new-york-v4/lib/*": ["./src/lib/*"],
+      "@/*": ["./src/*"]
+    },
+    "types": ["vite/client", "node", "vite-plugin-pwa/client"]
+  },
+  "include": ["src", "tests", "vite.config.ts", "pwa-assets.config.ts"]
+}

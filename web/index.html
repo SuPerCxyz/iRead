@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="iRead" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" href="/iread-icon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <title>iRead</title>
+    <script>
+      // 首屏在模块脚本加载前应用已校验的本地镜像；无镜像时也必须解析系统深色。
+      ;(function () {
+        try {
+          var modes = ["system", "light", "dark"]
+          var lightPresets = ["template", "paper", "white"]
+          var darkPresets = ["template", "gray", "midnight"]
+          var densities = ["compact", "standard", "relaxed"]
+          var accents = ["default", "blue", "green"]
+          var colorPattern = /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/
+          var widthPattern = /^(?:[5-9][0-9]|100)%$/
+          var value = {
+            themeMode: "system",
+            lightPreset: "template",
+            darkPreset: "template",
+            accent: "default",
+            density: "standard",
+            contentWidth: "auto",
+            navCompact: false,
+          }
+          var appliedCss = {}
+
+          try {
+            var raw = window.localStorage.getItem("iread.appearance.v1")
+            if (raw) {
+              var mirror = JSON.parse(raw)
+              if (mirror && typeof mirror === "object") {
+                var candidate =
+                  mirror.pending ||
+                  (mirror.record && mirror.record.value) ||
+                  null
+                if (
+                  candidate &&
+                  typeof candidate === "object" &&
+                  modes.indexOf(candidate.themeMode) >= 0 &&
+                  lightPresets.indexOf(candidate.lightPreset) >= 0 &&
+                  darkPresets.indexOf(candidate.darkPreset) >= 0 &&
+                  densities.indexOf(candidate.density) >= 0 &&
+                  (accents.indexOf(candidate.accent) >= 0 ||
+                    colorPattern.test(candidate.accent)) &&
+                  (candidate.contentWidth === "auto" ||
+                    (typeof candidate.contentWidth === "number" &&
+                      Number.isInteger(candidate.contentWidth) &&
+                      candidate.contentWidth >= 50 &&
+                      candidate.contentWidth <= 100)) &&
+                  typeof candidate.navCompact === "boolean"
+                ) {
+                  value = candidate
+                }
+                if (
+                  mirror.appliedCss &&
+                  typeof mirror.appliedCss === "object" &&
+                  !Array.isArray(mirror.appliedCss)
+                ) {
+                  appliedCss = mirror.appliedCss
+                }
+              }
+            }
+          } catch (error) {
+            // 镜像损坏时使用默认外观继续启动。
+          }
+
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches
+          var dark =
+            value.themeMode === "dark" ||
+            (value.themeMode === "system" && prefersDark)
+          var root = document.documentElement
+          if (dark) {
+            root.classList.add("dark")
+          } else {
+            root.classList.remove("dark")
+          }
+          root.setAttribute("data-light-preset", value.lightPreset)
+          root.setAttribute("data-dark-preset", value.darkPreset)
+          root.setAttribute("data-density", value.density)
+          root.setAttribute("data-nav-compact", String(value.navCompact))
+          if (accents.indexOf(value.accent) >= 0) {
+            root.setAttribute("data-accent", value.accent)
+          } else {
+            root.removeAttribute("data-accent")
+          }
+
+          if (colorPattern.test(appliedCss["--primary"])) {
+            root.style.setProperty("--primary", appliedCss["--primary"])
+          }
+          if (colorPattern.test(appliedCss["--primary-foreground"])) {
+            root.style.setProperty(
+              "--primary-foreground",
+              appliedCss["--primary-foreground"],
+            )
+          }
+          if (colorPattern.test(appliedCss["--ring"])) {
+            root.style.setProperty("--ring", appliedCss["--ring"])
+          }
+          if (colorPattern.test(appliedCss["--sidebar-primary"])) {
+            root.style.setProperty(
+              "--sidebar-primary",
+              appliedCss["--sidebar-primary"],
+            )
+          }
+          if (
+            colorPattern.test(appliedCss["--sidebar-primary-foreground"])
+          ) {
+            root.style.setProperty(
+              "--sidebar-primary-foreground",
+              appliedCss["--sidebar-primary-foreground"],
+            )
+          }
+          if (colorPattern.test(appliedCss["--sidebar-ring"])) {
+            root.style.setProperty(
+              "--sidebar-ring",
+              appliedCss["--sidebar-ring"],
+            )
+          }
+          if (widthPattern.test(appliedCss["--iread-content-width"])) {
+            root.style.setProperty(
+              "--iread-content-width",
+              appliedCss["--iread-content-width"],
+            )
+          }
+        } catch (error) {
+          // 引导脚本任何异常都不得阻断页面启动。
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

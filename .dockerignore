@@ -1,0 +1,34 @@
+# 构建上下文只保留 web/ 与 server/ 所需内容
+.git
+.gitignore
+.agents
+openspec
+data
+data-dev
+backups
+artifacts
+screenshots
+bin
+
+# 依赖与本地构建产物在镜像内重新生成
+**/node_modules
+web/dist
+web/coverage
+web/*.tsbuildinfo
+server/iread
+
+# 环境文件与本机日志不得进入镜像
+.env
+.env.*
+!.env.example
+*.log
+
+# 本机部署临时文件
+/current.jar
+/manifest.json
+/progress.json
+
+# 编辑器与系统文件
+.idea
+.vscode
+.DS_Store
