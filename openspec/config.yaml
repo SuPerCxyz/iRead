@@ -1,7 +1,7 @@
 schema: spec-driven
 context: |
   iRead 是单用户自托管阅读器，React/TypeScript/Vite + Go/SQLite，单容器提供静态资源与版本化 API。
-  当前代码已有共享ReaderShell与EPUB/PDF/漫画；2026-11-10用户确认tasks阶段8四项阅读器修订，允许对应代码与隔离验证；既有49/61状态不代表完整产品验收。
+  当前代码已有共享ReaderShell与EPUB/PDF/漫画；2026-11-10用户确认tasks阶段8四项阅读器修订，允许对应代码与隔离验证；既有50/61状态不代表完整产品验收。
   用户已确认方案1：沿用sidebar-07和shadcn官方组件样式，替换为iRead业务内容，保留动态阅读设置。旧自主视觉决定失效；唯一样式文件只能等价集中模板样式，禁止分散硬编码；用户显式偏好走受控适配，细节见ui-design.md。
   原文件保持原字节只读；EPUB/PDF/CBZ/CBR 均为首完整版本必需；资源接入前必须完成单管理员鉴权与内容隔离。
   PDF 原件 Range 与 API 默认绕过通用 Service Worker 缓存；精准 locator 与 revision、双向有限缓存不能降级。
