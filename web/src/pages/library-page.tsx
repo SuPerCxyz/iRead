@@ -211,33 +211,6 @@ export function LibraryPage() {
             />
           </div>
 
-          <div className="iread-library__view-toggle" role="group" aria-label="书库视图">
-            <Button
-              type="button"
-              size="icon-sm"
-              variant={view.value.viewMode === "grid" ? "secondary" : "ghost"}
-              aria-label="网格视图"
-              aria-pressed={view.value.viewMode === "grid"}
-              onClick={() => {
-                view.update({ viewMode: "grid" })
-              }}
-            >
-              <LayoutGrid aria-hidden="true" />
-            </Button>
-            <Button
-              type="button"
-              size="icon-sm"
-              variant={view.value.viewMode === "list" ? "secondary" : "ghost"}
-              aria-label="列表视图"
-              aria-pressed={view.value.viewMode === "list"}
-              onClick={() => {
-                view.update({ viewMode: "list" })
-              }}
-            >
-              <List aria-hidden="true" />
-            </Button>
-          </div>
-
           <Button
             type="button"
             variant="outline"
@@ -250,20 +223,58 @@ export function LibraryPage() {
             筛选与视图
             {activeCount > 0 ? `（${activeCount}）` : ""}
           </Button>
-          <Button
-            asChild
-            variant="ghost"
-            size="sm"
-            className="iread-library__settings-button"
-          >
-            <Link to="/settings?group=bookshelf">视图设置</Link>
-          </Button>
-          {total !== null ? (
-            <p className="iread-library__summary">
-              {narrowFilters ? "匹配 " : "共 "}
-              {total} 本图书
-            </p>
-          ) : null}
+
+          <div className="iread-library__toolbar-end">
+            <div
+              className="iread-library__view-toggle"
+              role="group"
+              aria-label="书库视图"
+            >
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={
+                  view.value.viewMode === "grid" ? "secondary" : "ghost"
+                }
+                aria-label="网格视图"
+                aria-pressed={view.value.viewMode === "grid"}
+                onClick={() => {
+                  view.update({ viewMode: "grid" })
+                }}
+              >
+                <LayoutGrid aria-hidden="true" />
+              </Button>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={
+                  view.value.viewMode === "list" ? "secondary" : "ghost"
+                }
+                aria-label="列表视图"
+                aria-pressed={view.value.viewMode === "list"}
+                onClick={() => {
+                  view.update({ viewMode: "list" })
+                }}
+              >
+                <List aria-hidden="true" />
+              </Button>
+            </div>
+
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="iread-library__settings-button"
+            >
+              <Link to="/settings?group=bookshelf">视图设置</Link>
+            </Button>
+            {total !== null ? (
+              <p className="iread-library__summary">
+                {narrowFilters ? "匹配 " : "共 "}
+                {total} 本图书
+              </p>
+            ) : null}
+          </div>
         </div>
 
         {showClearFilters ? (

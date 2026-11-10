@@ -379,6 +379,89 @@ async function main() {
       "书库总数显示 1000",
     )
 
+    logStep("顶栏、筛选行与右侧操作组对齐")
+    const layout = await page.evaluate(() => {
+      const box = (selector) => {
+        const node = document.querySelector(selector)
+        if (node === null) {
+          return null
+        }
+        const rect = node.getBoundingClientRect()
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.right,
+          height: rect.height,
+          width: rect.width,
+        }
+      }
+      const center = (rect) => (rect.top + rect.bottom) / 2
+      const items = [
+        box(".iread-library__search"),
+        box("#library-format"),
+        box("#library-reading-state"),
+        box("#library-sort"),
+        box(".iread-library__view-toggle"),
+        box(".iread-library__settings-button"),
+        box(".iread-library__summary"),
+      ].filter((rect) => rect !== null)
+      return {
+        topbar: box(".iread-topbar"),
+        upload: box(".iread-topbar__upload"),
+        pageContent: box(".iread-page__content"),
+        toolbar: box(".iread-library__toolbar"),
+        toolbarEnd: box(".iread-library__toolbar-end"),
+        label: box(".iread-library__filters-desktop [data-slot=field-label]"),
+        summary: box(".iread-library__summary"),
+        centers: items.map((rect) => center(rect)),
+      }
+    })
+    assert.ok(
+      Math.abs(
+        (layout.topbar.top + layout.topbar.bottom) / 2 -
+          (layout.upload.top + layout.upload.bottom) / 2,
+      ) <= 1,
+      "顶栏上传按钮应与顶栏垂直居中",
+    )
+    assert.equal(
+      Math.round(layout.upload.height),
+      36,
+      "桌面顶栏操作控件高度应为 36px",
+    )
+    assert.ok(
+      layout.pageContent.top - layout.topbar.bottom >= 0 &&
+        layout.pageContent.top - layout.topbar.bottom <= 9,
+      "页面内容应紧贴顶栏，顶部留白不超过 9px",
+    )
+    assert.ok(
+      layout.label.height <= 1 && layout.label.width <= 1,
+      "桌面筛选标签应视觉隐藏",
+    )
+    assert.equal(
+      await page
+        .locator(".iread-library__filters-desktop")
+        .getByRole("combobox", { name: "格式", exact: true })
+        .count(),
+      1,
+      "视觉隐藏后筛选控件仍应保留可访问名称",
+    )
+    assert.equal(layout.centers.length, 7, "筛选行应包含全部控件")
+    assert.ok(
+      Math.max(...layout.centers) - Math.min(...layout.centers) <= 2,
+      "搜索、筛选与右侧视图控件应在同一水平基线",
+    )
+    assert.ok(
+      Math.abs(layout.summary.right - layout.toolbar.right) <= 1 &&
+        Math.abs(layout.toolbarEnd.right - layout.toolbar.right) <= 1,
+      "数量摘要应与视图控件同组并右对齐",
+    )
+    assert.equal(
+      await page.locator(".iread-library__toolbar-end .iread-library__summary").count(),
+      1,
+      "数量摘要应位于右侧操作组内",
+    )
+
     logStep("分页、content-visibility 与 1000 本不全量挂载")
     assert.equal(
       await page.locator(".iread-book-card").count(),
@@ -897,6 +980,33 @@ async function main() {
       )) === true,
       "移动端不得横向溢出",
     )
+    const mobileToolbar = await mobilePage.evaluate(() => {
+      const box = (selector) => {
+        const rect = document.querySelector(selector).getBoundingClientRect()
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          right: rect.right,
+        }
+      }
+      const toolbar = box(".iread-library__toolbar")
+      const filter = box(".iread-library__filter-trigger")
+      const summary = box(".iread-library__summary")
+      return {
+        toolbarRight: toolbar.right,
+        filterCenter: (filter.top + filter.bottom) / 2,
+        summaryCenter: (summary.top + summary.bottom) / 2,
+        summaryRight: summary.right,
+      }
+    })
+    assert.ok(
+      Math.abs(mobileToolbar.filterCenter - mobileToolbar.summaryCenter) <= 1,
+      "移动端筛选按钮与数量摘要应在同一水平基线",
+    )
+    assert.ok(
+      Math.abs(mobileToolbar.summaryRight - mobileToolbar.toolbarRight) <= 1,
+      "移动端数量摘要应右对齐",
+    )
     await mobilePage.screenshot({
       path: "/tmp/opencode/iread-library-mobile-grid.png",
       fullPage: true,
@@ -909,6 +1019,40 @@ async function main() {
     await drawer.getByText("筛选与视图", { exact: true }).waitFor({
       timeout: 5000,
     })
+    assert.equal(
+      await drawer
+        .locator(".iread-library-filters [data-slot=field-label]")
+        .filter({ hasText: "格式" })
+        .isVisible(),
+      true,
+      "移动端 Drawer 应保留筛选标签",
+    )
+    const mobileTopbar = await mobilePage.evaluate(() => {
+      const box = (selector) => {
+        const rect = document.querySelector(selector).getBoundingClientRect()
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          height: rect.height,
+        }
+      }
+      const topbar = box(".iread-topbar")
+      const upload = box(".iread-topbar__upload")
+      return {
+        topbarCenter: (topbar.top + topbar.bottom) / 2,
+        uploadCenter: (upload.top + upload.bottom) / 2,
+        uploadHeight: upload.height,
+      }
+    })
+    assert.equal(
+      Math.round(mobileTopbar.uploadHeight),
+      44,
+      "移动端顶栏操作控件高度应为 44px",
+    )
+    assert.ok(
+      Math.abs(mobileTopbar.topbarCenter - mobileTopbar.uploadCenter) <= 1,
+      "移动端顶栏操作控件应垂直居中",
+    )
     await mobilePage.screenshot({
       path: "/tmp/opencode/iread-library-mobile-drawer.png",
       fullPage: true,

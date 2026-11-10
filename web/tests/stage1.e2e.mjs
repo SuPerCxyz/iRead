@@ -354,6 +354,93 @@ async function main() {
       /^(?:共|匹配) \d+ 本图书$/,
       "书库数量摘要应保留且不再占用整行标题区",
     )
+    const libraryLayout = await desktopPage.evaluate(() => {
+      const box = (selector) => {
+        const node = document.querySelector(selector)
+        if (node === null) {
+          return null
+        }
+        const rect = node.getBoundingClientRect()
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.right,
+          height: rect.height,
+          width: rect.width,
+        }
+      }
+      const center = (rect) => (rect.top + rect.bottom) / 2
+      const items = [
+        box(".iread-library__search"),
+        box(".iread-library__filters-desktop #library-format"),
+        box(".iread-library__filters-desktop #library-reading-state"),
+        box(".iread-library__filters-desktop #library-sort"),
+        box(".iread-library__view-toggle"),
+        box(".iread-library__settings-button"),
+        box(".iread-library__summary"),
+      ].filter((rect) => rect !== null)
+      return {
+        topbar: box(".iread-topbar"),
+        upload: box(".iread-topbar__upload"),
+        pageContent: box(".iread-page__content"),
+        toolbar: box(".iread-library__toolbar"),
+        toolbarEnd: box(".iread-library__toolbar-end"),
+        label: box(".iread-library__filters-desktop [data-slot=field-label]"),
+        summary: box(".iread-library__summary"),
+        centers: items.map((rect) => center(rect)),
+      }
+    })
+    assert.ok(
+      libraryLayout.topbar !== null &&
+        libraryLayout.upload !== null &&
+        Math.abs(
+          (libraryLayout.topbar.top + libraryLayout.topbar.bottom) / 2 -
+            (libraryLayout.upload.top + libraryLayout.upload.bottom) / 2,
+        ) <= 1,
+      "顶栏上传按钮应与顶栏垂直居中",
+    )
+    assert.equal(
+      Math.round(libraryLayout.upload.height),
+      36,
+      "桌面顶栏操作控件高度应为 36px",
+    )
+    assert.ok(
+      libraryLayout.pageContent !== null &&
+        libraryLayout.topbar !== null &&
+        libraryLayout.pageContent.top - libraryLayout.topbar.bottom >= 0 &&
+        libraryLayout.pageContent.top - libraryLayout.topbar.bottom <= 9,
+      "页面内容应紧贴顶栏，顶部留白不超过 9px",
+    )
+    assert.ok(
+      libraryLayout.label !== null &&
+        libraryLayout.label.height <= 1 &&
+        libraryLayout.label.width <= 1,
+      "桌面筛选标签应视觉隐藏",
+    )
+    assert.equal(
+      await desktopPage
+        .locator(".iread-library__filters-desktop")
+        .getByRole("combobox", { name: "格式", exact: true })
+        .count(),
+      1,
+      "视觉隐藏后筛选控件仍应保留可访问名称",
+    )
+    assert.equal(libraryLayout.centers.length, 7, "筛选行应包含全部控件")
+    assert.ok(
+      Math.max(...libraryLayout.centers) -
+        Math.min(...libraryLayout.centers) <=
+        2,
+      "搜索、筛选与右侧视图控件应在同一水平基线",
+    )
+    assert.ok(
+      libraryLayout.summary !== null &&
+        libraryLayout.toolbar !== null &&
+        libraryLayout.toolbarEnd !== null &&
+        Math.abs(libraryLayout.summary.right - libraryLayout.toolbar.right) <= 1 &&
+        Math.abs(libraryLayout.toolbarEnd.right - libraryLayout.toolbar.right) <= 1,
+      "数量摘要应与视图控件同组并右对齐",
+    )
     console.log("[E2E] 桌面侧栏折叠与标题去重通过")
 
     logStep("尾斜杠 breadcrumb 与 aria-current")
