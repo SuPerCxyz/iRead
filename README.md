@@ -7,16 +7,16 @@ iRead 是“本机优先的个人阅读库”。仓库当前不是完整产品�
 - **阶段3 EPUB / 阶段4 PDF**：已接入共享 ReaderShell，独立 Web 验收已在最终代码快照上重跑真实 EPUB/PDF 浏览器 E2E 并通过。
 - **阶段6 漫画**：服务端 CBZ/CBR manifest/页资源、客户端漫画引擎与共享 ReaderShell 已接线；漫画引擎独立 E2E 已通过，共享 Shell 的真实 `/read/:id` 漫画端到端 E2E 已由独立 Web 验收在最终代码上通过。
 - **阶段5 部分能力**：浏览器阅读缓存、进度 outbox、设置页缓存清理已接入并通过设置页缓存 E2E；独立 Web 验收覆盖手机 390×844 路径；阶段5 其余移动/PWA 深度项仍未完成。
-- **阶段8 阅读器修订（2026-11-10）**：视口/正文输入、EPUB 设置字段接线、本书自动保存草稿、PDF 命中搜索、页数回退与 Slider 可访问性代码已接入；Web/Go/OpenSpec 门禁通过，`reader-improvements.e2e.mjs` 真实运行 exit 0（覆盖 8.1 视口/手势、8.3 reflow 字段、8.4 本书自动保存/防抖串行/race、8.5 PDF 搜索/命中导航），`reader-real-pdf` 通过；但 8.2 的 PDF/漫画宿主全回归未跑、8.6 的 Q/人工视觉审查未做，`8.1–8.6` 仍全部未勾选，**阶段8未完成**。
+- **阶段8 阅读器修订（2026-11-10）**：视口/正文输入、EPUB 设置字段接线、本书自动保存草稿、PDF 命中搜索、页数回退与 Slider 可访问性已接入并通过隔离验收；`8.2–8.6` 已勾选（8.2 覆盖 EPUB 默认/零/自定义边距、滚动/旋转与 PDF `pageCount=0`、跨书隔离，另有 PDF/漫画宿主回归；8.6 含定向门禁与独立审查）；`8.1` 仍为 `[ ]`——隔离 KVM EPUB 的几何/视口已通过，但缺“修前截图”证据。**阶段8仍不能表述为 8/8 完成**。
 
-**当前不得宣称阶段2–8 已整体完成。** `tasks.md` 全清单为 **41/61 项已勾选、20 项未勾选**（阶段2–8 为 22/42 项已勾选、20 项未勾选）；代码、E2E 和阶段验收是不同层级的事实，详见“任务账本与验证状态”。
+**当前不得宣称阶段2–8 已整体完成。** `tasks.md` 全清单为 **49/61 项已勾选、12 项未勾选**（阶段2–8 为 30/42 项已勾选、12 项未勾选）；代码、E2E 和阶段验收是不同层级的事实，详见“任务账本与验证状态”。
 
 > **先分清三套运行环境**
 >
 > | 环境 | Web | API | 数据 | 说明 |
 > |---|---|---|---|---|
 > | 测试 web `8080` | `iread-lan` 容器，镜像 `iread:stage1` | 同容器 | 命名卷 `iread-db`/`iread-books`/`iread-cache` | 冻结的阶段1构建，**没有阶段2认证**；当前以 `0.0.0.0:8080` 发布，是用户明确授权的临时 LAN 预览例外 |
-> | 开发预览 `8081` | `iread-dev-preview` 容器，镜像 `iread:local`（重建后的当前代码；镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`，构建时间 `2026-11-10 16:57:51 +08:00`，容器 healthy） | 同容器 | 命名卷 `iread-dev-books`/`iread-dev-db`/`iread-dev-cache` | 当前代码的**开发无密码预览**（`IREAD_DEV_NO_AUTH=1`）；以 `0.0.0.0:8081` 临时发布到可信 LAN，打开即进入，不创建用户/会话，数据与 `8080` 隔离 |
+> | 开发预览 `8081` | `iread-dev-preview` 容器，镜像 `iread:local`（重建后的当前代码；镜像 ID `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`，构建时间 `2026-11-10 20:35:38 +08:00`，容器 healthy） | 同容器 | 命名卷 `iread-dev-books`/`iread-dev-db`/`iread-dev-cache` | 当前代码的**开发无密码预览**（`IREAD_DEV_NO_AUTH=1`）；以 `0.0.0.0:8081` 临时发布到可信 LAN，打开即进入，不创建用户/会话，数据与 `8080` 隔离 |
 > | 开发环境 | Vite `http://127.0.0.1:5173` | Go `http://127.0.0.1:8082` | 主工作区 `data-dev/{books,db,cache}` | 当前代码；启动命令默认带 `IREAD_DEV_NO_AUTH=1`（无密码）；联调真实认证时去掉该开关。上传、书库、EPUB/PDF、缓存均在此验证 |
 >
 > 三套端口、数据目录和容器互不复用。开发时不要把 Vite 指到 `8080` 的 stage1 容器，也不要把 `8081` 预览当作开发服务器；未确认时不要重建/停止这两个容器。`8081` 与本地开发（5173/8082）可以显式启用无密码模式，但只限开发/可信网络。
@@ -27,7 +27,7 @@ iRead 是“本机优先的个人阅读库”。仓库当前不是完整产品�
 
 本轮修订覆盖阅读视口/可信正文交互、EPUB 既有偏好接线、本书自动保存和 PDF 逐命中搜索。代码已接入：margin 像素数已补 CSS 单位并保留合理正文最大宽度；正文键盘/触控保留链接、控件、选区与原生滚动，书内脚本/CSP 边界不变；设置默认仅自动写本书，先写 bookId+fileVersion 本机草稿，再防抖串行 CAS，设全局默认始终显式；PDF 跨文字 item 归一化并保留全部命中高亮、单独标活动命中，支持计数/前后/Enter 与取消旧查询；清单总页数为 0 时，Shell 采用当前 ready 引擎的可靠计数，正式元数据按 engine/book/fileVersion 防串书，不改 HTTP/数据库。
 
-**验证状态**：Web `typecheck`/`lint`/`check:styles`/`test`（20 文件 202 用例）/`build`、Go `test`/`vet`/`gofmt`、`openspec validate --strict` 均通过；`web/tests/reader-improvements.e2e.mjs` 真实运行 **exit 0**，覆盖 8.1 视口/手势、8.3 reflow 字段、8.4 本书自动保存/防抖串行/race、8.5 PDF 搜索/命中导航，`reader-real-pdf` 同时通过。**8.2 的 PDF/漫画宿主全回归未运行，8.6 的 Q 独审/人工视觉审查未完成**，`tasks.md` 的 `8.1–8.6` 保持未勾选。不得据上述 E2E 结果宣称阶段8验收完成，也不据此勾选大 PDF、长时内存或真机里程碑。
+**验证状态**：Web `typecheck`/`lint`/`check:styles`/`test`（22 文件 226 用例）/`build`、Go `test`/`vet`/`gofmt`、`openspec validate --strict` 均通过；`web/tests/reader-improvements.e2e.mjs` 真实运行 **exit 0**（8.1 视口/手势、8.3 reflow 字段、8.4 本书自动保存/防抖串行/race、8.5 PDF 搜索/命中导航）；`reader-real-pdf`、`reader-shell-epub`、`reader-shell-pdf`、`reader-shell-comic`、`settings-reader`、`library`、`stage1` 亦通过；8.2 另有隔离定向用例（默认/零/自定义边距、滚动、旋转、PDF `pageCount=0` 回退、跨书隔离）通过。据此 `tasks.md` 已勾选 `8.2–8.6`；**`8.1` 保持未勾选**：隔离 KVM EPUB 的中心带与宿主/iframe 几何已通过，但“修前截图”证据缺失。阶段8仍不得表述为 8/8 完成，大 PDF、长时内存与真机不在本轮结论内。
 
 生成样本的可重复隔离入口（使用现有依赖，不需要私有书籍）：
 
@@ -35,9 +35,9 @@ iRead 是“本机优先的个人阅读库”。仓库当前不是完整产品�
 node web/tests/reader-improvements.e2e.mjs
 ```
 
-入口为每次运行创建全新临时账号、SQLite、books/cache、回环端口和截图目录，生成 EPUB 与跨 item PDF；子 runner 覆盖视口/正文输入、设置保存/重开/离线/真实 409、迟到 ACK/存储失败、PDF 命中/延迟取消/手动导航竞态。日志只输出路径与验证元数据，不输出凭证或原书正文；完成后仅停止该入口启动的服务，证据保留在打印的临时目录。`CHROME_PATH` 可选择本机已存在的 Chromium；未设置时使用已安装 Playwright 浏览器。`IREAD_E2E_TMP` 可指定临时产物父目录。**本次真实运行 exit 0（覆盖 8.1/8.3/8.4/8.5），`reader-real-pdf` 也通过；证据保留在脚本打印的临时目录，不写入仓库。**
+入口为每次运行创建全新临时账号、SQLite、books/cache、回环端口和截图目录，生成 EPUB 与跨 item PDF；子 runner 覆盖视口/正文输入、设置保存/重开/离线/真实 409、迟到 ACK/存储失败、PDF 命中/延迟取消/手动导航竞态。日志只输出路径与验证元数据，不输出凭证或原书正文；完成后仅停止该入口启动的服务，证据保留在打印的临时目录。`CHROME_PATH` 可选择本机已存在的 Chromium；未设置时使用已安装 Playwright 浏览器。`IREAD_E2E_TMP` 可指定临时产物父目录。**本次真实运行 exit 0（覆盖 8.1/8.3/8.4/8.5），`reader-real-pdf` 也通过；8.2 另由隔离定向用例覆盖；证据保留在脚本打印的临时目录，不写入仓库。**
 
-可选真实样本仍只读：`IREAD_TEST_EPUB` 指定 EPUB；`IREAD_TEST_PDFS` 为未加密 PDF 的绝对路径 JSON 数组，入口将其流式送入独立本机测试库，不写源目录、不外传、不入仓库。没有真实书时生成样本仍覆盖可重复功能回归；真实大书结果只代表所测路径。本轮未形成可复核的大 PDF/加密样本回归报告，300MB、长时内存和真实手机均未验证。
+可选真实样本仍只读：`IREAD_TEST_EPUB` 指定 EPUB；`IREAD_TEST_PDFS` 为未加密 PDF 的绝对路径 JSON 数组，入口将其流式送入独立本机测试库，不写源目录、不外传、不入仓库。没有真实书时生成样本仍覆盖可重复功能回归；真实大书结果只代表所测路径。大 PDF 已有独立报告（80/119/416 MB，[`artifacts/pdf-large-verification.md`](artifacts/pdf-large-verification.md)，本机路径），其中 4.2/4.3 仍为 PARTIAL；精确 300 MB、30–60 分钟长时内存和真实手机均未验证。
 
 ## 当前交付状态
 
@@ -45,46 +45,51 @@ node web/tests/reader-improvements.e2e.mjs
 
 以 `openspec/changes/build-iread-pwa/tasks.md` 的实际 checkbox 为准（2026-11-10 逐项统计）：
 
-- **总计**：61 项中 **41 项已勾选、20 项未勾选**，不得表述为阶段2–8 全部完成。
+- **总计**：61 项中 **49 项已勾选、12 项未勾选**，不得表述为阶段2–8 全部完成。
 - **阶段0**：`0.1–0.7` 共 7 项，设计文档全部完成。
 - **阶段1**：`1.1–1.12` 共 12 项，全部完成，已交付并冻结在 `iread:stage1`。
-- **阶段2**：7 项中 `2.1–2.6` 已勾选（6 项），`2.7` 未勾选。
-- **阶段3**：8 项中 `3.1–3.4`、`3.6`、`3.7` 已勾选（6 项），`3.5`、`3.8` 未勾选。
-- **阶段4**：5 项中 `4.1`、`4.4` 已勾选（2 项），`4.2`、`4.3`、`4.5` 未勾选。
+- **阶段2**：7 项中 `2.1–2.7` 全部已勾选（7 项）。
+- **阶段3**：8 项中 `3.1–3.4`、`3.6`、`3.7`、`3.8` 已勾选（7 项），`3.5` 未勾选。
+- **阶段4**：5 项中 `4.1`、`4.4`、`4.5` 已勾选（3 项），`4.2`、`4.3` 未勾选。
 - **阶段5**：7 项中 `5.1–5.4` 已勾选（4 项），`5.5`、`5.6`、`5.7` 未勾选。
 - **阶段6**：5 项中 `6.1–6.4` 已勾选（4 项），`6.5` 未勾选。
 - **阶段7**：`7.1–7.4` 共 4 项，可选、未实施，全部未勾选。
-- **阶段8**：`8.1–8.6` 共 6 项，代码已接入且门禁通过；`reader-improvements.e2e.mjs` 真实运行 exit 0 覆盖 8.1/8.3/8.4/8.5，`reader-real-pdf` 通过；8.2 宿主全回归与 8.6 Q 审查未完成，全部未勾选。
+- **阶段8**：`8.1–8.6` 共 6 项，`8.2–8.6` 已勾选（5 项）；`8.1` 的几何/视口已通过但缺“修前截图”，保持未勾选。
 
-**阶段2–8 合计**：42 项中 **22 项已勾选、20 项未勾选**，不得表述为阶段2–8 全部完成。
+**阶段2–8 合计**：42 项中 **30 项已勾选、12 项未勾选**，不得表述为阶段2–8 全部完成。
 
 | 未勾选项 | 原因类别 | 当前事实 |
 |---|---|---|
-| `2.7` | 最终验收 | 阶段2 API/E2E、安全/原件完整性与容器重建回归尚未合并为最终验收；四格式样本哈希/任务结果交接待完成。 |
 | `3.5` | 设置字段 | 三级继承与阅读设置已接入并有部分 E2E；四类 versioned 设置的全部文字参数、出版方 CSS、字段来源与跨端恢复尚未逐字段验收。 |
-| `3.8` | 最终验收 | 真实 EPUB 纵向 E2E 已有通过记录，但资源/定位/书签/安全回归与使用说明的最终交接未完成。 |
-| `4.2` | 大文件验收 | PDF.js 会话与 Range 已接入；100/300 MB 初开/末页/远跳的请求量与耗时未验收。 |
-| `4.3` | 长滚动验收 | 占位/Canvas/文字层/搜索等已接入；长滚动、快速跳页、旧响应释放与内存上限未验收。 |
-| `4.5` | 真机/HTTPS/性能 | 100→101→100→99→101 网络复用、真实浏览器 Range/代理/SW 联调未完成。 |
+| `4.2` | 大文件验收 | PDF.js 会话与 Range 已接入；80/119 MB 首开各读取约 39.6 MB（605/607 个 206 请求），不能证明“初开仅必要 Range”；416 MB 真实样本首开仅 1.75 MB 通过；精确 100/300 MB 未生成。 |
+| `4.3` | 长滚动验收 | 857 页占位、长滚动、快速跳页与搜索可用；19:23 构建上 PDF 内置目录面板卡在“正在读取目录…”（1 页无目录样本同样复现），20:35 镜像复验已能即时显示“没有内置目录”，仍需在最终快照用“有目录”样本复跑；慢网快速跳页有短暂指示器竞态，857 个 Canvas 默认后备存储约 140–154 MB。 |
 | `5.5` | 真机 | 移动 Sheet/中间工具栏/侧区翻页的 iPhone/Android 横竖屏、安全区与动态视口未验收。 |
 | `5.6` | 真机/HTTPS | iOS/Android 安装、standalone、Shell 离线、后台恢复与可选更新未验证；当前无 HTTPS 环境。 |
 | `5.7` | 性能 | 开发性能面板与 30–60 分钟/300 MB/大库实测报告未完成。 |
-| `6.5` | 最终验收 | 四格式完整纵向链路、真实 iPhone/Android/PWA、性能/安全/容器重建回归与最终 README 未签核。 |
+| `6.5` | 最终验收 | 四格式共享 Shell 功能 PASS；真实 iPhone/Android/PWA standalone、300 MB/长时性能 BLOCKED，未签核。 |
 | `7.1`、`7.2`、`7.3`、`7.4` | 可选/未实施 | 其他格式与增强，可选、未授权实施。 |
-| `8.1` | 独立复现 | `reader-improvements` E2E 已覆盖视口/手势；隔离 KVM EPUB 的中心带复现、修前截图、宿主/iframe 几何与原件只读/独立存储核验未完成。 |
-| `8.2` | 视口/正文 | margin 单位、宿主几何与正文键盘/触控桥接代码已接入；**PDF/漫画宿主全回归未运行**，默认/零/自定义边距、旋转、面板/工具栏、链接选区与 locator 保持待回归。 |
-| `8.3` | 设置字段 | reflow theme/fontWeight/background/text/link/selection 字段已由 `reader-improvements` E2E 覆盖；三级继承/重开与 Slider 可访问名/键盘操作未单独验收。 |
-| `8.4` | 自动保存 | 本书草稿/防抖串行 CAS、重开、离线与真实 409/迟到 ACK 竞态已由 `reader-improvements` E2E 覆盖；`tasks.md` 本轮未勾选，其余子路径（如不误写 global）未逐项签核。 |
-| `8.5` | PDF 搜索 | 跨 item 命中映射、当前/总数、前后/Enter、命中高亮、换词/清空与关闭取消旧查询已由 `reader-improvements` E2E 覆盖；`tasks.md` 本轮未勾选。 |
-| `8.6` | 最终验收 | 定向门禁与 8.1/8.3/8.4/8.5 的真实 E2E 已通过；**Q 独审与人工视觉/最终范围核验未完成，8.2 宿主全回归缺失**，阶段8未收口；大 PDF/长时内存/真机不在本轮结论内。 |
+| `8.1` | 独立复现 | 隔离 KVM EPUB 的中心带、宿主/iframe 几何、默认/零/自定义边距、滚动与旋转已通过；**缺“修前截图”证据**，保持未勾选。 |
+
+**本轮新增勾选与证据（2026-11-10 最终验收）**
+
+- `2.7` **PASS**：四格式上传→索引→书库→详情→manifest/资源/封面/进度/书签/设置全链路通过；源/存储 SHA-256 与大小一致、每书仅一个原扩展名文件、无隐式转换；认证/CSRF/401/403/409、任务成功/失败/取消/重试、缓存清理、临时卷容器重建均通过（[`artifacts/final-acceptance.md`](artifacts/final-acceptance.md)，本机路径）。已知观察项：清缓存后派生封面被删而书库 DTO 仍返回原 `cover.href`（请求 404），不影响原件/进度，但前端需占位兜底或重索引。
+- `3.8` **PASS（主路径）**：真实 EPUB 的上传/manifest/资源、TOC、CFI 定位与书签、字号重排、进度重开恢复、章节局部重试、恶意内容清洗/CSP、字体混淆、DRM 与固定布局拒绝均通过；此前 `reader-epub.e2e.mjs` 在字号重排进度比例处的严格断言失败已修复，重跑 **exit 0**（`/tmp/opencode/reader-epub-final*.log`，本机临时目录）。真实设备仍不在结论内。
+- `4.5` **PASS**：100→101→100→99→101 在同一会话与 reload 后均实现 0 请求复用，reload 仅 1 个 65,536 B 首块 revalidate；IndexedDB 616 块/40.35 MB 前后不膨胀，CacheStorage 无原件；200/503/超时/损坏内容均有可理解错误与重试恢复（[`artifacts/pdf-large-verification.md`](artifacts/pdf-large-verification.md)，本机路径）。口径说明：Service Worker 为“拦截后 `fetch` 直通”，不是“完全不注册 Range 路由”；真实代理/CDN 未验。
+- `8.2` **PASS**：EPUB margin 单位修复后默认 26px、零边距 0px、自定义 77px 的 CSS 边距有效；分页/滚动（0→3401）、旋转、面板打开保持 locator；PDF `pageCount=0` 时用当前 book/fileVersion/ready 引擎的可靠总数贯通 3 页/5 页两本书的翻页、跳页、locator 与百分比且不串书；`reader-shell-pdf`/`reader-shell-comic` 宿主回归均 exit 0。
+- `8.3` **PASS**：reflow theme/fontWeight/background/text/link/selection 字段从设置页真实控件→三级值→adapter→正文接通；出版方 CSS 不覆盖用户字号/字体/文字色，用户覆盖与重开持久化通过；Slider 具备可访问名与键盘操作；未新增 HTTP 字段/迁移、未改默认模板皮肤。
+- `8.4` **PASS**：默认仅本书自动保存，即时预览→本机版本化草稿→防抖串行 CAS；显式“设全局”才写 global，恢复默认废弃旧世代；断网、存储失败、真实 409、迟到 ACK、退出重开均通过，未误写全局。
+- `8.5` **PASS**：PDF 跨文字 item 归一化与命中映射，全部命中高亮并单独标活动项（实测 6 处命中）；当前/总数、前后、Enter、滚入高亮、换词/清空/关闭取消旧查询均通过；迟到的渲染结果不会把手动导航拉回。
+- `8.6` **PASS**：`typecheck`/`lint`/`check:styles`/`test`（22 文件 226 用例）/`build`、Go `test`/`vet`/`gofmt`、OpenSpec strict 通过；隔离 EPUB/PDF/漫画 runner 与只读真实样本复跑通过，独立审查与最终范围核验完成。本轮未据此勾选 300 MB/长时内存/真机等未验里程碑。
+
+**仍待验证**：`3.5` 设置字段逐项验收；`4.2`/`4.3` 大 PDF 首开与 PDF 内部目录/内存；`5.5`–`5.7` 真机与性能；`6.5` 真机/PWA/300 MB/长时签核；`7.1`–`7.4` 可选格式；`8.1` 修前截图。`4.5` 勾选只代表本机浏览器/SW 直通口径，不等于真实代理/CDN 验收。
 
 **已勾选的验收补充**：`4.4` PDF 页内书签与 `6.3` 漫画基础页码书签已补真实共享 Shell E2E（第 5 页/第 8 页的创建、列表、跳转、`If-Match` 删除与重开无残留），`tasks.md` 已勾选；这不等于阶段4/6 整体验收。
 
-**“代码已实现但验收未覆盖”不等于“功能已完成”**：`4.2`、`4.3` 仍是大文件 PDF 与长滚动/内存验收缺口，`4.5` 仍缺网络复用与真实浏览器 Range/代理/SW 联调；`8.1–8.6` 中 8.1/8.3/8.4/8.5 已有真实 E2E，但 8.2 宿主全回归与 8.6 Q 审查仍未收口。补测或修复前不得据此宣称对应阶段完成。
+**“代码已实现但验收未覆盖”不等于“功能已完成”**：`4.2`、`4.3` 仍是大文件 PDF 首开、内置目录与长滚动/内存验收缺口；`8.1–8.6` 中 `8.1` 缺“修前截图”，其余已通过；`3.5` 设置字段与 `6.5` 的真机/PWA/性能门槛仍未收口。补测或修复前不得据此宣称对应阶段完成。
 
-**已完成的独立验收**：服务端 **127/127 项断言 PASS、0 失败**；Web 独立验收 **PASS**（阶段1/2/3/4、漫画共享 Shell、缓存、退出清理与手机 390×844），详见“验证记录”。**P1 复核结论：P1-1、P1-2、P1-3、P1-5、P1-6 已关闭；P1-4 已用真实 `page.reload()`/导航 E2E 关闭；P1-A/P1-B 已修复并由真实 `reader-progress-unload.e2e.mjs` 验证通过（当前 `pnpm test` 为 20 文件 202 用例通过）。本轮修复范围可交付，但阶段2–8 / 61 项任务未全部完成。**
+**已完成的独立验收**：服务端 **127/127 项断言 PASS、0 失败**；Web 独立验收 **PASS**（阶段1/2/3/4、漫画共享 Shell、缓存、退出清理与手机 390×844），详见“验证记录”。**P1 复核结论：P1-1、P1-2、P1-3、P1-5、P1-6 已关闭；P1-4 已用真实 `page.reload()`/导航 E2E 关闭；P1-A/P1-B 已修复并由真实 `reader-progress-unload.e2e.mjs` 验证通过（当前 `pnpm test` 为 22 文件 226 用例通过）。本轮修复范围可交付，但阶段2–8 / 61 项任务未全部完成。**
 
-**`8081` 预览**：`iread-dev-preview` 当前运行重建后的当前代码镜像 `iread:local`（镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`，构建时间 `2026-11-10 16:57:51 +08:00`，容器 healthy），使用独立 `iread-dev-*` 三卷；以 `IREAD_DEV_NO_AUTH=1`、`IREAD_ENV=development` 启动，打开即进入，不渲染登录/初始化页，也不创建用户/会话。历史检查已验证健康检查、`/healthz`、`GET /api/v1/auth/status`（`devNoAuth=true`、`initialized=true`、`authenticated=true`、`setupTokenRequired=false`）、`/`、`/library`、`/settings` 浏览器页面、非 root 与日志告警；重建后容器健康且无密码。该预览是无密码的 HTTP/LAN 临时例外，不是 HTTPS、生产部署或安全验收，**不得用于生产或公网**。`8080` 的 `iread-lan` 仍是冻结的 `iread:stage1`，不得用于验收阶段2–8。
+**`8081` 预览**：`iread-dev-preview` 当前运行重建后的当前代码镜像 `iread:local`（镜像 ID `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`，构建时间 `2026-11-10 20:35:38 +08:00`，容器 healthy），使用独立 `iread-dev-*` 三卷；以 `IREAD_DEV_NO_AUTH=1`、`IREAD_ENV=development` 启动，打开即进入，不渲染登录/初始化页，也不创建用户/会话。历史检查已验证健康检查、`/healthz`、`GET /api/v1/auth/status`（`devNoAuth=true`、`initialized=true`、`authenticated=true`、`setupTokenRequired=false`）、`/`、`/library`、`/settings` 浏览器页面、非 root 与日志告警；20:35 镜像复验另确认 PDF 857 页、顶栏单行、PDF 内置目录即时结果、`/settings` 手动缩放 100% 与封面 404 回退（详见“验证记录”）。重建后容器健康且无密码。该预览是无密码的 HTTP/LAN 临时例外，不是 HTTPS、生产部署或安全验收，**不得用于生产或公网**。`8080` 的 `iread-lan` 仍是冻结的 `iread:stage1`，不得用于验收阶段2–8。
 
 ### 已实现并接入（以代码为准）
 
@@ -133,7 +138,7 @@ node web/tests/reader-improvements.e2e.mjs
 **PWA/容器**
 
 - PWA 仍是阶段1 Shell；容器阶段1验证以本机 `artifacts/stage1-verification.md` 为准（本机路径，克隆后不存在）。
-- 当前 `8080` 测试容器固定为阶段1镜像，不能用它验收阶段2认证/上传/阅读器（该镜像本身没有认证端点，`/api/v1/auth/status` 返回 404，不存在登录页）。当前代码的容器预览为 `iread-dev-preview`（`0.0.0.0:8081`、独立 `iread-dev-*` 三卷、`IREAD_PUBLIC_ORIGIN=http://192.168.100.170:8081`、`IREAD_ENV=development`、`IREAD_DEV_NO_AUTH=1`），是重建后的当前代码开发无密码预览（镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`、构建时间 `2026-11-10 16:57:51 +08:00`、容器 healthy）。已完成健康检查、`/healthz`、`/api/v1/auth/status`、三路由浏览器无密码验证、非 root 与日志检查，不等于完整容器/安全验收。
+- 当前 `8080` 测试容器固定为阶段1镜像，不能用它验收阶段2认证/上传/阅读器（该镜像本身没有认证端点，`/api/v1/auth/status` 返回 404，不存在登录页）。当前代码的容器预览为 `iread-dev-preview`（`0.0.0.0:8081`、独立 `iread-dev-*` 三卷、`IREAD_PUBLIC_ORIGIN=http://192.168.100.170:8081`、`IREAD_ENV=development`、`IREAD_DEV_NO_AUTH=1`），是重建后的当前代码开发无密码预览（镜像 ID `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`、构建时间 `2026-11-10 20:35:38 +08:00`、容器 healthy）。已完成健康检查、`/healthz`、`/api/v1/auth/status`、三路由浏览器无密码验证、非 root 与日志检查，不等于完整容器/安全验收。
 
 ### 已有验证证据（摘要）
 
@@ -157,18 +162,19 @@ node web/tests/reader-improvements.e2e.mjs
 | `web/tests/library-browser.e2e.mjs` | 1000 本种子书库、筛选/排序/视图设置、错误重试、返回恢复 | `书库/视图设置浏览器验收全部通过` |
 | `web/tests/reader-shell.e2e.mjs` | 共享 Shell、真实 TOC/书签/设置三级继承/进度、401/403/409/412/422、手机 | `真实 API 阅读器共享 Shell 通过` |
 | `web/tests/reader-shell-epub.e2e.mjs` | 真实 EPUB 正文、目录、CFI 书签、字号重排、章节失败重试、进度恢复、手机 | `真实 EPUB 共享 Shell 通过` |
+| `web/tests/reader-epub.e2e.mjs` | EPUB 引擎独立挂载：EPUB3/EPUB2 NCX、CSP/沙箱与恶意内容、CFI、字号重排、固定布局拒绝；`shellWired` 为历史字段，当前接线由 `reader-shell-epub` 覆盖 | 字号重排进度断言修复后 `exit 0`（`EPUB 引擎断言通过`） |
 | `web/tests/reader-shell-pdf.e2e.mjs` | 真实 PDF Canvas/文字层、翻页/缩放/布局、搜索、目录、locator、Range 206、409/加密、手机 | `通过：真实 /read/:id PDF 渲染、设置、搜索、目录、locator、Range、错误与手机均验证。` |
 | `web/tests/reader-comic.e2e.mjs` | 漫画引擎独立挂载（非共享 Shell）：CBZ 12 页、真实 CBR RAR5 3 页、缺页、连续/双页/手机 | `漫画引擎断言通过。` |
 | `web/tests/reader-shell-comic.e2e.mjs` | 真实 `/read/:id` 漫画共享 Shell：CBZ/CBR、单/双/连续、RTL、fit、跳页、进度恢复、409、手机 | 最终代码连续两次 `PASS`（独立 Web 验收） |
 | `web/tests/settings-cache.e2e.mjs` | 服务端缓存用量/清理、CSRF 重试、部分失败重试、原件/进度/书签/偏好保留、浏览器缓存、手机、401 | `设置页缓存与 PWA 全部断言通过` |
-| `web/tests/reader-improvements.e2e.mjs` | 阶段8独立入口：全新临时账号/DB/books/cache/端口，生成 EPUB 与跨 item PDF，串联视口/正文输入、设置草稿/CAS、PDF 命中/延迟取消/导航竞态 | 真实运行 `exit 0`（8.1/8.3/8.4/8.5）；`reader-real-pdf` 另通过 |
+| `web/tests/reader-improvements.e2e.mjs` | 阶段8独立入口：全新临时账号/DB/books/cache/端口，生成 EPUB 与跨 item PDF，串联视口/正文输入、设置草稿/CAS、PDF 命中/延迟取消/导航竞态 | 真实运行 `exit 0`（8.1/8.3/8.4/8.5）；8.2 另由隔离定向用例覆盖；`reader-real-pdf` 另通过 |
 | `web/tests/reader-viewport.e2e.mjs` | 阶段8子 runner：阅读视口/中心带/margin 与宿主几何（需 `IREAD_READER_FIX_CONNECTION` 隔离环境） | 随入口 `exit 0`（8.1） |
 | `web/tests/reader-settings-save.e2e.mjs` | 阶段8子 runner：本书自动保存草稿、防抖串行 CAS、重开恢复（需隔离环境） | 随入口 `exit 0`（8.4） |
 | `web/tests/reader-settings-race.e2e.mjs` | 阶段8子 runner：迟到 ACK/409、存储失败、世代隔离与不误写 global（需隔离环境） | 随入口 `exit 0`（8.4） |
 | `web/tests/reader-search-hits.e2e.mjs` | 阶段8子 runner：PDF 跨 item 命中、当前命中/总数、全部命中高亮（需隔离环境） | 随入口 `exit 0`（8.5） |
 | `web/tests/reader-search-navigation.e2e.mjs` | 阶段8子 runner：PDF 搜索前后/Enter、清空/关闭取消旧查询、手动导航不被迟到命中拉回（需隔离环境） | 随入口 `exit 0`（8.5） |
 
-阶段8 子 runner 不是独立入口：它们读取 `reader-improvements.e2e.mjs`（或任务运行器）生成的 `/tmp` 隔离 connection 文件，单独执行时会因缺少 `IREAD_READER_FIX_CONNECTION` 失败。`reader-real-pdf.e2e.mjs` 本轮单独执行通过；`reader-epub.e2e.mjs`、`reader-pdf.e2e.mjs`、`reader-progress-unload.e2e.mjs`、`book-capability.e2e.mjs`、`auth-setup-token.e2e.mjs`、`auth-dev-no-auth.e2e.mjs`、`auth-logout-cleanup.e2e.mjs` 等脚本同样按需单独执行；本表只保留主要记录，不承诺这些脚本的最近结果。
+阶段8 子 runner 不是独立入口：它们读取 `reader-improvements.e2e.mjs`（或任务运行器）生成的 `/tmp` 隔离 connection 文件，单独执行时会因缺少 `IREAD_READER_FIX_CONNECTION` 失败。`reader-real-pdf.e2e.mjs` 本轮单独执行通过；`reader-pdf.e2e.mjs`、`reader-progress-unload.e2e.mjs`、`book-capability.e2e.mjs`、`auth-setup-token.e2e.mjs`、`auth-dev-no-auth.e2e.mjs`、`auth-logout-cleanup.e2e.mjs` 等脚本同样按需单独执行；本表只保留主要记录，不承诺这些脚本的最近结果。
 
 已有截图输出目录（由脚本生成，位于临时目录，不随仓库交付）：
 
@@ -313,7 +319,7 @@ docker compose down               # 停止并移除容器，保留卷
 
 当前运行的 `iread-lan` 不是标准 compose 服务实例，而是按用户明确授权临时以 `-p 0.0.0.0:8080:8080` 启动的独立容器。它使用 `iread:stage1` 镜像，**只有阶段1外壳/外观/PWA，没有阶段2认证**；它不是交付默认，也不构成安全验收。即使仓库当前代码已实现认证，也不能把该旧容器的 `0.0.0.0` 发布描述为“已鉴权安全”。
 
-当前代码的容器预览是独立容器 `iread-dev-preview`：镜像为重建后的当前代码 `iread:local`（镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`，构建时间 `2026-11-10 16:57:51 +08:00`，容器 healthy）、`-p 0.0.0.0:8081:8080`、独立命名卷 `iread-dev-books`/`iread-dev-db`/`iread-dev-cache`，并设置 `IREAD_ADDR=0.0.0.0:8080`、`IREAD_ALLOW_NON_LOOPBACK=1`、`IREAD_WEB_DIR=/app/web`、`IREAD_ENV=development`、`IREAD_DEV_NO_AUTH=1`、`IREAD_PUBLIC_ORIGIN=http://192.168.100.170:8081`；不设置 `IREAD_SETUP_TOKEN`。它是**开发无密码预览**：打开 `http://192.168.100.170:8081/` 直接进入，不显示登录/初始化页，也不会创建用户或会话。它与 `8080` 不共享端口、数据卷或容器；重建预览不会停止或替换 `iread-lan`。该预览只用于可信开发网络，不是 HTTPS/生产部署，也不构成安全验收。
+当前代码的容器预览是独立容器 `iread-dev-preview`：镜像为重建后的当前代码 `iread:local`（镜像 ID `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`，构建时间 `2026-11-10 20:35:38 +08:00`，容器 healthy）、`-p 0.0.0.0:8081:8080`、独立命名卷 `iread-dev-books`/`iread-dev-db`/`iread-dev-cache`，并设置 `IREAD_ADDR=0.0.0.0:8080`、`IREAD_ALLOW_NON_LOOPBACK=1`、`IREAD_WEB_DIR=/app/web`、`IREAD_ENV=development`、`IREAD_DEV_NO_AUTH=1`、`IREAD_PUBLIC_ORIGIN=http://192.168.100.170:8081`；不设置 `IREAD_SETUP_TOKEN`。它是**开发无密码预览**：打开 `http://192.168.100.170:8081/` 直接进入，不显示登录/初始化页，也不会创建用户或会话。它与 `8080` 不共享端口、数据卷或容器；重建预览不会停止或替换 `iread-lan`。该预览只用于可信开发网络，不是 HTTPS/生产部署，也不构成安全验收。
 
 该例外只应在可信网络临时查看；查看结束后应停止并删除相应容器，再按 `docker compose up -d` 恢复 `127.0.0.1:8080` 回环发布。不要把它当作 LAN 预览的通用做法，也不要通过公网暴露。
 
@@ -552,12 +558,12 @@ PWA 安装要求安全上下文（HTTPS，或浏览器认可的 localhost）。�
 独立 QA 报告（均为本机路径，克隆后不存在）：
 
 - 服务端：[`artifacts/stage2-backend-verification.md`](artifacts/stage2-backend-verification.md)（本机路径，克隆后不存在） — 在真实服务进程与临时数据目录上执行，**127/127 项断言 PASS、0 失败**；覆盖认证、上传、索引任务、书库/封面、EPUB/PDF/CBZ/CBR manifest 与资源、进度、书签、阅读设置、缓存用量/清理。不包含前端/浏览器、容器、HTTPS/反向代理和真实设备。
-- Web：[`artifacts/stage2-web-verification.md`](artifacts/stage2-web-verification.md)（本机路径，克隆后不存在） — **PASS**；typecheck/lint/check:styles/build 均退出码 0，当次报告记载 Vitest 15 文件 159 用例通过（**当次历史记录**；当前 `pnpm test` 为 20 文件 202 用例）；真实 Chromium 覆盖阶段1 Shell/PWA/离线/更新与 404、认证/setup/CSRF/401、书库/上传/任务、EPUB、PDF、漫画共享 Shell、设置页缓存、退出清理和手机 390×844。
+- Web：[`artifacts/stage2-web-verification.md`](artifacts/stage2-web-verification.md)（本机路径，克隆后不存在） — **PASS**；typecheck/lint/check:styles/build 均退出码 0，当次报告记载 Vitest 15 文件 159 用例通过（**当次历史记录**；当前 `pnpm test` 为 22 文件 226 用例）；真实 Chromium 覆盖阶段1 Shell/PWA/离线/更新与 404、认证/setup/CSRF/401、书库/上传/任务、EPUB、PDF、漫画共享 Shell、设置页缓存、退出清理和手机 390×844。
 - 测试文案修复：独立验收发现两处测试期望文案过期——阶段1 的 `Service Worker 已启用`（当前 UI 为 `Service Worker 已注册`）和书库的精确文本 `整理已取消`（当前 UI 为 `整理已取消，可以重试。`）；仓库内对应断言已修复并更新为当前 UI 文案。报告保留“原始脚本 FAIL、临时适配副本 PASS”的记录，未把适配结果当作原始脚本通过。
 - 报告记录的剩余风险：EPUB 进度恢复百分比断言曾有 1 次波动（重跑通过）；漫画 E2E 存在 CSRF 噪声，且最终通过依赖验证窗口内的并行修复；这些不改变主要路径 PASS 的结论，但源码再改动时需复跑。
-- P1 复核（2026-11-10）：P1-1/P1-2/P1-3/P1-5/P1-6 已有最终证据关闭；P1-4 使用真实 `page.reload()` 与路由离开/返回 E2E 关闭（`web/tests/reader-progress-unload.e2e.mjs`，覆盖位置变化后 600ms 内 reload、导航离开/返回和 localStorage 快照恢复，输出“真实卸载/重载进度恢复通过”）。P1-A/P1-B 修复后复跑同一 E2E：退出快照 `savedAt` 取到达位置时刻、IDB revision 优先、keepalive 409 仅同 locator 自愈；真实重载、keepalive 写入、路由离开/返回和“localStorage 较新、IndexedDB 较旧时选择 localStorage”均通过。**P1 复核时 Web Vitest 通过；当前 `pnpm test` 为 20 文件 202 用例通过**。P1 关闭不改变 `tasks.md` 的 41/61 账本，也不代表阶段2–8 整体完成；本轮修复范围可交付。
+- P1 复核（2026-11-10）：P1-1/P1-2/P1-3/P1-5/P1-6 已有最终证据关闭；P1-4 使用真实 `page.reload()` 与路由离开/返回 E2E 关闭（`web/tests/reader-progress-unload.e2e.mjs`，覆盖位置变化后 600ms 内 reload、导航离开/返回和 localStorage 快照恢复，输出“真实卸载/重载进度恢复通过”）。P1-A/P1-B 修复后复跑同一 E2E：退出快照 `savedAt` 取到达位置时刻、IDB revision 优先、keepalive 409 仅同 locator 自愈；真实重载、keepalive 写入、路由离开/返回和“localStorage 较新、IndexedDB 较旧时选择 localStorage”均通过。**P1 复核时 Web Vitest 通过；当前 `pnpm test` 为 22 文件 226 用例通过**。P1 关闭不改变 `tasks.md` 的 49/61 账本，也不代表阶段2–8 整体完成；本轮修复范围可交付。
 - 浏览器数据层（2026-11-10）：`web/tests/reader-cache.e2e.mjs` 输出 `reader-cache 浏览器测试全部通过`，覆盖 CacheStorage/IndexedDB、EPUB/PDF 206/manifest 缓存、cacheGeneration、离线 L3、多标签 Web Locks/BroadcastChannel 与 L3 过期；`web/tests/reader-cache-integration.e2e.mjs` 输出 `缓存集成测试全部通过`，覆盖真实 EPUB/PDF/CBZ 断网重开命中 L3 与设置页清理。
-- 容器预览（2026-11-10 16:57，开发无密码）：`docker compose build` 重建 `iread:local`（镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`，构建时间 `2026-11-10 16:57:51 +08:00`）并替换 `iread-dev-preview`；`8081` 当前运行重建后的当前代码镜像，启动参数为 `-p 0.0.0.0:8081:8080`、独立 `iread-dev-*` 三卷、`IREAD_ENV=development`、`IREAD_DEV_NO_AUTH=1`、`IREAD_ADDR=0.0.0.0:8080`、`IREAD_ALLOW_NON_LOOPBACK=1`、`IREAD_PUBLIC_ORIGIN=http://192.168.100.170:8081`、`IREAD_WEB_DIR=/app/web`，不设置 setup 令牌。历史复验（14:04 镜像）：容器 healthy、`/healthz` 200、`GET /api/v1/auth/status` 200 且返回 `devNoAuth=true`/`initialized=true`/`authenticated=true`/`setupTokenRequired=false`；真实 Chromium 打开 `/`、`/library`、`/settings` 均直接进入、无登录/初始化/安装令牌表单，侧栏与顶栏显示“开发模式 · 无密码”，浏览后用户表/会话表仍为 0；进程 uid/gid 10001，日志出现开发模式禁用密码认证的 WARN，未出现任何令牌。阅读器抽查：EPUB 设置面板显示主题、字体、字号、字重、行高、段距、首行缩进、对齐、页边距、分栏与颜色等字段，PDF 设置面板显示布局、缩放、页距、工具栏与纸张背景字段；临时上传的 938B 两页 PDF 显示 `1 / 2` 页码，搜索 `nebula` 命中第 1 页；现有 80MB PDF 在 30s 打开超时内仅拉取约 15MB，未能完成打开，大文件加载性能需单独跟进。`8080` 的 `iread-lan` 未停止/重建，仍为 `iread:stage1` 且 healthy。该检查不覆盖生产/HTTPS/安全验收。UI 对齐修复重建（16:57 镜像，容器 `48c68d7f4b4a`）复验：容器 healthy、`/healthz` 200、`GET /api/v1/auth/status` 返回 `devNoAuth=true`/`initialized=true`/`authenticated=true`/`setupTokenRequired=false`、非 root（uid/gid 10001）、日志仅出现开发模式与非回环监听 WARN 且无令牌；真实 Chromium 在 1920×1080、1440×900、390×844 下打开 `/`、`/library`、`/settings`：桌面顶栏面包屑、开发徽标、上传按钮同为 36px 高，手机同为 44px 高，中心线均为 y=32；内容顶部距顶栏 8px，无大块空白；桌面书库的搜索、格式、状态、排序、网格/列表切换、视图设置与“共 6 本图书”同处一行且垂直居中（中心线 y=91），筛选字段标签保留为视觉隐藏的可访问名称；手机端“筛选与视图”Drawer 的格式/阅读状态/排序等标签正常显示，顶栏菜单触发器 44×44 可打开侧栏 Sheet，书库工具栏自然换行为两行且 `scrollWidth` 等于 390 视口宽、无横向溢出；`8080` 的 `iread-lan` 未停止/重建，仍为 `iread:stage1` 且 healthy。
+- 容器预览（2026-11-10 16:57、19:39、20:35，开发无密码）：`docker compose build` 重建 `iread:local`（镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`，构建时间 `2026-11-10 16:57:51 +08:00`）并替换 `iread-dev-preview`；`8081` 在各次重建后运行对应的当前代码镜像，启动参数为 `-p 0.0.0.0:8081:8080`、独立 `iread-dev-*` 三卷、`IREAD_ENV=development`、`IREAD_DEV_NO_AUTH=1`、`IREAD_ADDR=0.0.0.0:8080`、`IREAD_ALLOW_NON_LOOPBACK=1`、`IREAD_PUBLIC_ORIGIN=http://192.168.100.170:8081`、`IREAD_WEB_DIR=/app/web`，不设置 setup 令牌。历史复验（14:04 镜像）：容器 healthy、`/healthz` 200、`GET /api/v1/auth/status` 200 且返回 `devNoAuth=true`/`initialized=true`/`authenticated=true`/`setupTokenRequired=false`；真实 Chromium 打开 `/`、`/library`、`/settings` 均直接进入、无登录/初始化/安装令牌表单，侧栏与顶栏显示“开发模式 · 无密码”，浏览后用户表/会话表仍为 0；进程 uid/gid 10001，日志出现开发模式禁用密码认证的 WARN，未出现任何令牌。阅读器抽查：EPUB 设置面板显示主题、字体、字号、字重、行高、段距、首行缩进、对齐、页边距、分栏与颜色等字段，PDF 设置面板显示布局、缩放、页距、工具栏与纸张背景字段；临时上传的 938B 两页 PDF 显示 `1 / 2` 页码，搜索 `nebula` 命中第 1 页；现有 80MB PDF 在 30s 打开超时内仅拉取约 15MB，未能完成打开，大文件加载性能需单独跟进。`8080` 的 `iread-lan` 未停止/重建，仍为 `iread:stage1` 且 healthy。该检查不覆盖生产/HTTPS/安全验收。UI 对齐修复重建（16:57 镜像，容器 `48c68d7f4b4a`）复验：容器 healthy、`/healthz` 200、`GET /api/v1/auth/status` 返回 `devNoAuth=true`/`initialized=true`/`authenticated=true`/`setupTokenRequired=false`、非 root（uid/gid 10001）、日志仅出现开发模式与非回环监听 WARN 且无令牌；真实 Chromium 在 1920×1080、1440×900、390×844 下打开 `/`、`/library`、`/settings`：桌面顶栏面包屑、开发徽标、上传按钮同为 36px 高，手机同为 44px 高，中心线均为 y=32；内容顶部距顶栏 8px，无大块空白；桌面书库的搜索、格式、状态、排序、网格/列表切换、视图设置与“共 6 本图书”同处一行且垂直居中（中心线 y=91），筛选字段标签保留为视觉隐藏的可访问名称；手机端“筛选与视图”Drawer 的格式/阅读状态/排序等标签正常显示，顶栏菜单触发器 44×44 可打开侧栏 Sheet，书库工具栏自然换行为两行且 `scrollWidth` 等于 390 视口宽、无横向溢出；`8080` 的 `iread-lan` 未停止/重建，仍为 `iread:stage1` 且 healthy。PDF 故障书复验（20:35 镜像 `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`，容器 `f1578850b5d3`）：`docker compose build` 后容器 healthy、`/healthz` 200、`GET /api/v1/auth/status` 返回 `devNoAuth=true`/`initialized=true`/`authenticated=true`/`setupTokenRequired=false`、无 setup 令牌、进程 uid/gid 10001、日志无令牌与错误；对 `0f84b2c301c02032aa4d6694da378bc7` 此前已 reindex（task `2434717b1879e0504f588fe558014450`）并保持详情与 manifest `pageCount=857`、`extractionStatus=ok`、`indexVersion=2`；真实 Chromium 新会话打开 `/read/0f84...` 约 0.3s 就绪并显示 `500 / 857`（恢复进度），翻页到 501、跳页到 1 与 500 均正常，无可见“无法打开 PDF”、错误遮罩、加载提示或残留 notice；1920×1080 与 1440×900 下顶栏高 53px 且单行，长书名省略，右侧搜索/目录/设置/全屏按钮完整、中心线一致，PDF 工具条缩放/适宽/适页可见；打开“PDF 内置目录”约 0.3s 内显示“这份 PDF 没有内置目录。”，不卡“正在读取目录…”；`/settings` 阅读默认 PDF“手动缩放”默认显示 `100%`（范围 25–400%、步长 5%），改到 105% 后保存按钮启用、恢复内置默认后回到 100% 且按钮禁用，未见占位文案；书库中封面接口 404 的图书显示标题回退、无破图；另用同一镜像的独立临时容器验证 1 页 PDF 同样即时显示“没有内置目录”。`8080` 的 `iread-lan` 未停止/重建，仍为 `iread:stage1` 且 healthy。
 
 脚本级记录（最近一次，供参考）：
 
@@ -572,10 +578,13 @@ PWA 安装要求安全上下文（HTTPS，或浏览器认可的 localhost）。�
 
 ### 阶段8（2026-11-10）
 
-- 代码门禁：`pnpm typecheck`、`pnpm lint`、`pnpm check:styles`、`pnpm test`（20 文件 202 用例）、`pnpm build` 均退出码 0；`go test ./...`、`go vet ./...`、`gofmt -l .` 均退出码 0；`openspec validate build-iread-pwa --strict` 退出码 0。
-- 代码已接入视口/正文交互、EPUB 设置字段、本书自动保存草稿、PDF 命中搜索、页数回退与 Slider 可访问性；`web/tests/reader-improvements.e2e.mjs` 真实运行 **exit 0**，在全新临时账号/DB/books/cache/端口上覆盖 8.1 视口/手势、8.3 reflow 字段、8.4 本书自动保存/防抖串行/race、8.5 PDF 搜索/命中导航；`web/tests/reader-real-pdf.e2e.mjs` 同时通过。日志与截图只在本机临时目录，不随仓库交付。
-- **未完成项**：8.2 的 PDF/漫画宿主全回归**未运行**；8.6 的 Q 独审与人工视觉审查**未做**。`tasks.md` 的 `8.1–8.6` 仍全部未勾选，**不得表述为 8/8 或阶段8完成**。
-- 容器：`8081` 的 `iread-dev-preview` 已运行重建后的 `iread:local`（镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`，构建时间 `2026-11-10 16:57:51 +08:00`），容器 healthy 且无密码；阶段8 E2E 使用独立临时 Go 服务、Vite 与临时数据，不是容器内同源全链路验收。
+- 代码门禁：`pnpm typecheck`、`pnpm lint`、`pnpm check:styles`、`pnpm test`（22 文件 226 用例）、`pnpm build` 均退出码 0；`go test ./...`、`go vet ./...`、`gofmt -l .` 均退出码 0；`openspec validate build-iread-pwa --strict` 退出码 0。
+- **8.1（保持未勾选）**：`reader-improvements` 的视口/手势与隔离 KVM EPUB 的宿主/iframe 几何、默认/零/自定义边距、滚动与旋转通过；**缺“修前截图”证据**，故不勾选。
+- **8.2**：隔离定向用例通过——EPUB 边距 26px/0px/77px 的 CSS 与有效网格、滚动 0→3401、旋转、面板打开后 locator 不变；PDF `pageCount=0` 的 3 页/5 页两本书按当前引擎可靠总数贯通翻页/跳页/进度且不串书；`reader-shell-pdf` 与 `reader-shell-comic` 宿主回归 exit 0。
+- **8.3/8.4/8.5**：`web/tests/reader-improvements.e2e.mjs` 真实运行 **exit 0**（全新临时账号/DB/books/cache/端口）：设置控件→三级值→正文（含出版方 CSS 与重开）、本书自动保存/防抖串行 CAS/离线/真实 409/迟到 ACK/存储失败、PDF 跨 item 命中/计数/前后/Enter/清空关闭与手动导航竞态。
+- **8.6**：上述门禁 + 隔离 EPUB/PDF/漫画 runner + `reader-real-pdf`、`settings-reader`、`library`、`stage1` 通过；独立审查与最终范围核验完成，`tasks.md` 勾选 `8.2–8.6`。日志/截图只在本机临时目录，不随仓库交付。
+- **仍未验**：`8.1` 的修前截图；`4.2`/`4.3` 的大 PDF 首开、PDF 内置目录与内存；`6.5` 的真机/PWA/300 MB/长时；`5.5`–`5.7`、`7.1`–`7.4`。
+- 容器：`8081` 的 `iread-dev-preview` 已运行重建后的 `iread:local`（镜像 ID `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`，构建时间 `2026-11-10 20:35:38 +08:00`），容器 healthy 且无密码；阶段8 E2E 使用独立临时 Go 服务、Vite 与临时数据，不是容器内同源全链路验收。
 
 **上述独立报告与 E2E 只覆盖所列路径，不等于阶段整体验收，也不等于真实设备、HTTPS/反向代理、大文件或 PWA standalone 验收。**
 
@@ -585,11 +594,11 @@ PWA 安装要求安全上下文（HTTPS，或浏览器认可的 localhost）。�
 
 ## 未验证项与剩余风险
 
-- **阶段2–8 未整体验收**：`tasks.md` 全清单为 41/61 项已勾选、20 项未勾选（阶段2–8 为 22/42 项已勾选、20 项未勾选，清单见“任务账本与验证状态”）；P1-1/P1-2/P1-3/P1-5/P1-6 已关闭，P1-4 已用真实 `page.reload()`/导航 E2E 关闭，P1-A/P1-B 已修复并由同一 E2E 验证通过（`web/tests/reader-progress-unload.e2e.mjs`；当前 Web 单测 20 文件 202 用例通过）。本轮修复范围可交付，但 P1 关闭不等于阶段2–8 / 61 项任务整体完成。独立报告和 E2E 覆盖主要路径，但不是全量兼容性、安全或产品验收。`4.2`、`4.3` 属于大文件/长滚动验收覆盖不足，`4.5` 属于网络复用与真实浏览器联调不足，不是已确认的功能缺失。
-- **阶段8 未完成**：`8.1–8.6` 全部未勾选；`reader-improvements.e2e.mjs` 真实 exit 0 已覆盖 8.1 视口/手势、8.3 reflow 字段、8.4 本书自动保存/防抖串行/race、8.5 PDF 搜索/命中导航，`reader-real-pdf` 通过；但 **8.2 的 PDF/漫画宿主全回归未运行、8.6 的 Q 独审/人工视觉审查未做**。不得表述为 8/8 或阶段8完成；大 PDF、长时内存和真机不在本轮结论内。
-- **`8080` 仍是阶段1容器，当前代码预览在 `8081`**：`8080` 没有阶段2认证/书库/阅读器（也没有认证端点，`/api/v1/auth/status` 为 404），不能用它验收当前代码；`8081` 的 `iread-dev-preview` 是重建后的当前代码**开发无密码预览**（`IREAD_DEV_NO_AUTH=1`），历史检查已完成健康、认证状态、三路由浏览器无密码验证、非 root、用户/会话未创建与日志检查，但它是 HTTP/LAN 临时预览，只限可信网络，不是交付默认、生产默认或安全验收；当前镜像 ID `sha256:134ff1a63dad27f984c01e036780b494bff9b28a1cea2cd01bd97a870b199a79`、构建时间 `2026-11-10 16:57:51 +08:00`、容器 healthy。
+- **阶段2–8 未整体验收**：`tasks.md` 全清单为 49/61 项已勾选、12 项未勾选（阶段2–8 为 30/42 项已勾选、12 项未勾选，清单见“任务账本与验证状态”）；P1-1/P1-2/P1-3/P1-5/P1-6 已关闭，P1-4 已用真实 `page.reload()`/导航 E2E 关闭，P1-A/P1-B 已修复并由同一 E2E 验证通过（`web/tests/reader-progress-unload.e2e.mjs`；当前 Web 单测 22 文件 226 用例通过）。本轮修复范围可交付，但 P1 关闭不等于阶段2–8 / 61 项任务整体完成。独立报告和 E2E 覆盖主要路径，但不是全量兼容性、安全或产品验收。`4.2`、`4.3` 属于大 PDF 首开、PDF 内置目录与长滚动/内存覆盖不足；`8.1` 仍缺修前截图。
+- **阶段8 未完成 8/8**：`8.2–8.6` 已勾选（8.2 边距/滚动/旋转/PDF 页数回退与宿主回归；8.3 设置字段；8.4 本书自动保存；8.5 PDF 命中搜索；8.6 门禁与独立审查）；`8.1` 仍为 `[ ]`——几何/视口已通过但缺“修前截图”。不得表述为 8/8 或阶段8完成；大 PDF、长时内存和真机不在本轮结论内。
+- **`8080` 仍是阶段1容器，当前代码预览在 `8081`**：`8080` 没有阶段2认证/书库/阅读器（也没有认证端点，`/api/v1/auth/status` 为 404），不能用它验收当前代码；`8081` 的 `iread-dev-preview` 是重建后的当前代码**开发无密码预览**（`IREAD_DEV_NO_AUTH=1`），历史检查已完成健康、认证状态、三路由浏览器无密码验证、非 root、用户/会话未创建与日志检查，但它是 HTTP/LAN 临时预览，只限可信网络，不是交付默认、生产默认或安全验收；当前镜像 ID `sha256:5060a992d1534cd676740c998c80b693106a0049dd58fb31e45b4c67ab884462`、构建时间 `2026-11-10 20:35:38 +08:00`、容器 healthy。
 - **`8081` 无密码预览的安全边界**：该容器不校验密码/会话/CSRF/Origin，任何能访问 `8081` 的人都可以读写其数据卷；只允许在可信开发网络使用。生产/公网必须使用密码认证（`IREAD_DEV_NO_AUTH` 与 `IREAD_ENV=production` 互斥，后者会启动失败），并配置 HTTPS、`IREAD_PUBLIC_ORIGIN` 与 setup 令牌。
-- **`8081` 容器预览未做完整浏览器 E2E**：本次浏览器检查只覆盖 `/`、`/library`、`/settings` 的无密码进入与侧栏/顶栏标识，未覆盖上传/阅读器全链路；阶段8 的 `reader-improvements` 也使用独立临时 Go 服务、Vite 与临时数据，容器内同源静态产物和完整索引链路仍未验收。
+- **`8081` 容器预览未做完整浏览器 E2E**：16:57 镜像的浏览器检查只覆盖 `/`、`/library`、`/settings` 的无密码进入与侧栏/顶栏标识；19:39 复验补充了 PDF 故障书打开、翻页与跳页；20:35 复验补充 PDF 857 页、顶栏单行与长书名省略、内置目录即时结果、settings 手动缩放 100% 与封面 404 回退，仍未覆盖上传与完整索引链路；阶段8 的 `reader-improvements` 也使用独立临时 Go 服务、Vite 与临时数据，容器内同源静态产物和完整索引链路仍未验收。
 - **HTTPS/反向代理未验收**：Secure Cookie、真实域名、代理头、TLS 终止、setup 令牌链路和访问控制均未做真实部署验证。
 - **真机/PWA standalone 未验证**：没有 iPhone/Android 设备；视口模拟不覆盖安全区、横竖屏、standalone 启动和后台恢复。
 - **大文件/性能未验证**：1 GiB 上传、50 文件批量、慢网/断网/续传、100/300 MB PDF、超大 EPUB/漫画、3000 本书库和长时间阅读内存未测。
@@ -627,7 +636,7 @@ data-dev/            本机开发数据（首次启动自动创建，不提交�
 
 ## OpenSpec 文档入口
 
-阶段1–8对应的产品与契约文档保留在 `build-iread-pwa` change 中；OpenSpec 状态只表示 artifact 存在，不代表功能完成或验收通过。全清单 41/61 项已勾选、20 项未勾选（阶段2–8 为 22/42 项已勾选、20 项未勾选），单项勾选不等于阶段整体验收通过。
+阶段1–8对应的产品与契约文档保留在 `build-iread-pwa` change 中；OpenSpec 状态只表示 artifact 存在，不代表功能完成或验收通过。全清单 49/61 项已勾选、12 项未勾选（阶段2–8 为 30/42 项已勾选、12 项未勾选），单项勾选不等于阶段整体验收通过。
 
 - [产品目标与本轮范围](openspec/changes/build-iread-pwa/proposal.md)
 - [完整产品能力规格](openspec/changes/build-iread-pwa/specs/)

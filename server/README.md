@@ -147,6 +147,7 @@ Cookie 与有效期：
 - `GET/POST /api/v1/books/{bookId}/bookmarks`、`DELETE /api/v1/books/{bookId}/bookmarks/{bookmarkId}`：书签列表/创建/条件删除；创建按 `clientMutationId` 与规范化 locator 去重，删除要求 `If-Match: "<revision>"`，过时返回 412。
 - `GET/PUT /api/v1/settings/reader`：全局阅读默认值的 revision 条件写入。
 - `GET/PUT /api/v1/books/{bookId}/reader-settings`：单书稀疏覆盖与继承结果；兼容 `/reader-overrides` 旧路径。未知字段、`null`、旧 `fileVersion` 或旧 revision 均明确拒绝，不静默写回。
+- 阅读设置颜色：`reflow.background/text/link/selection` 接受 `inherit|auto|template|paper|white|gray|midnight` 或小写 `#rrggbb`。同一请求中同时给出 hex 的 `text`/`background`、`link`/`background`、`selection`/`text` 颜色对必须满足 WCAG 2.1 对比度 ≥4.5:1；不足返回 422 `invalid_request`，`details` 含 `field`、`pair`、`foreground`、`background`、`ratio`、`minimum`。预设名、`inherit` 与未同时给出的继承值不在服务端计算；非法值不写入，读取已持久化的非法值时返回 500 `internal_error`，不会静默应用。
 
 本目录只声明 Server 端点与数据边界；阅读引擎、共享 ReaderShell、搜索与设置编辑器在 `web/`。阶段3–6 前端已由独立 Web E2E 覆盖，阶段8 独立 E2E/Q 尚未收口；未注册端点仍按未实现处理，UI 不得把 manifest 存在当作“阅读器已验收”。
 
@@ -259,6 +260,8 @@ GOFLAGS=-buildvcs=false go build ./...
 ```
 
 当前环境如遇 VCS 元数据问题，请在命令前加 `GOFLAGS=-buildvcs=false`。
+
+PDF 校验器支持经典 xref、xref 流、PNG Predictor（含 Predictor 12）和 type-2 `/Type /ObjStm` 压缩对象，并沿 `/Prev` 合并增量 xref。已用真实 80 MB、857 页的线性化 PDF 只读验证 `PageCount=857`；对应的 predictor、ObjStm、`/Prev` 合成样本见 `internal/formats/pdf_test.go`。修复前已索引的 PDF 不会自动回填页数；需在修复后重新索引该文件（例如重新上传同一原件）才能回填，原件本身无需修改。
 
 ## 安全边界
 

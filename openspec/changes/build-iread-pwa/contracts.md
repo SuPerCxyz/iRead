@@ -154,6 +154,8 @@ ETag/Last-Modified及条件判断以[RFC9110 §13–14](https://httpwg.org/specs
 
 原文P0的用户自定义强调色/阅读颜色及即时调整已随方案1确认保留；“不要自定义样式”禁止开发者任意改变默认皮肤，不禁止用户显式设置。ui-design第10节统一可用preset/token、用户参数范围、默认继承和对比度规则；前后端消费同一版本化定义，非法输入不应用、不保存，禁止分散设计常量。
 
+服务端对同一请求中同时显式给出的`#rrggbb`颜色对执行WCAG 2.1校验：`reflow.text`/`reflow.background`、`reflow.link`/`reflow.background`、`reflow.selection`（背景）/`reflow.text`（前景）对比度均须≥4.5:1；预设名、`inherit`及未同时给出的继承值不在服务端计算。不足返回422 `invalid_request`，`details`含`field`、`pair`、`foreground`、`background`、`ratio`、`minimum`；保存和读取边界都拒绝非法值，不静默应用。
+
 文字字段至少fontFamily/publisherFont、fontSize/weight、lineHeight、paragraphSpacing、textIndent/align、horizontal/verticalMargin、maxWidth、pagination/scroll、columns、animation、background/text/link/selection、publisherCSSMode；PDF分layoutMode(single/continuous/horizontal)与zoomMode(fit-width/fit-page/manual)，manualScale存比例，fit的effectiveScale仅计算；另有gap/background/toolbarVisible，双页P1。漫画有direction、single/double/continuous、fit-screen/fit-width/original、gap/background。PDF不伪改内嵌字号/行高，反色默认关闭并提示失真。
 
 设备预加载值不是三级阅读偏好的字段：只写本机`iread.device-preferences.v1`的schemaVersion/preloadProfile，按origin/浏览器存储分区生效；服务器全局reader和单书overrides拒绝该字段，避免跨设备覆盖。各端可选不同档，失败保留会话内选择；详见ui-design第10节。
