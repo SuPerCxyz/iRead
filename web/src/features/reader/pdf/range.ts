@@ -1,4 +1,5 @@
-import { PDFDataRangeTransport } from "pdfjs-dist"
+import "./pdfjs-compat"
+import { PDFDataRangeTransport } from "pdfjs-dist/legacy/build/pdf.mjs"
 
 import type { ReaderCacheRuntime } from "../session/reader-cache-runtime"
 import type { ResourcePriority } from "../session/resource-scheduler"
@@ -36,17 +37,25 @@ export class PdfLoadError extends Error {
   readonly code: string
   readonly status: number
   readonly retryable: boolean
+  /** 已截断/脱敏的底层异常 name: message，供错误页与复制诊断使用。 */
+  readonly detail: string
 
   constructor(
     code: string,
     message: string,
-    options: { status?: number; retryable?: boolean; cause?: unknown } = {},
+    options: {
+      status?: number
+      retryable?: boolean
+      cause?: unknown
+      detail?: string
+    } = {},
   ) {
     super(message, { cause: options.cause })
     this.name = "PdfLoadError"
     this.code = code
     this.status = options.status ?? 0
     this.retryable = options.retryable ?? false
+    this.detail = options.detail ?? ""
   }
 }
 

@@ -1057,6 +1057,22 @@ async function main() {
       .locator(".iread-pdf__error-message")
       .filter({ hasText: "PDF 原件已在别处更新" })
       .waitFor({ timeout: 10_000 })
+    const conflictRoot = conflictPage.locator(".iread-pdf")
+    assert.match(
+      (await conflictRoot.getAttribute("data-error-detail")) ?? "",
+      /PDF 原件.*更新/,
+      "409 错误必须带可诊断的 data-error-detail",
+    )
+    assert.equal(
+      await conflictPage.locator(".iread-pdf__error-detail:not([hidden])").count(),
+      1,
+      "错误页必须显示技术详情行",
+    )
+    assert.equal(
+      await conflictPage.getByRole("button", { name: "复制 PDF 诊断信息" }).count(),
+      1,
+      "错误页必须提供复制诊断信息按钮",
+    )
     assert.equal(
       await conflictPage.getByRole("button", { name: "重试打开 PDF" }).count(),
       1,
@@ -1065,6 +1081,94 @@ async function main() {
       path: path.join(SCREENSHOT_DIR, "desktop-pdf-409.png"),
     })
     await conflictPage.close()
+
+    logStep("worker 静态资源 404：显示专门 worker_failed 文案")
+    const workerPage = await desktopContext.newPage()
+    await workerPage.route(
+      (url) => /pdf\.worker\.compat/.test(url.pathname) && url.searchParams.has("src"),
+      async (route) => {
+        await route.fulfill({
+          status: 404,
+          contentType: "text/plain",
+          body: "worker not found",
+        })
+      },
+    )
+    await workerPage.goto(`/read/${encodeURIComponent(uploaded.bookId)}`, {
+      waitUntil: "domcontentloaded",
+    })
+    await workerPage
+      .locator('.iread-pdf[data-pdf-state="error"]')
+      .waitFor({ timeout: 20_000 })
+    const workerRoot = workerPage.locator(".iread-pdf")
+    assert.equal(
+      await workerRoot.getAttribute("data-error-code"),
+      "worker_failed",
+      "worker 资源加载失败必须映射为 worker_failed",
+    )
+    assert.match(
+      (await workerRoot.getAttribute("data-error-detail")) ?? "",
+      /worker|dynamically imported|fetch/i,
+      "worker 失败必须保留原始动态 import 错误",
+    )
+    assert.equal(
+      await workerPage.getByRole("button", { name: "复制 PDF 诊断信息" }).count(),
+      1,
+    )
+    assert.equal(
+      await workerPage.locator(".iread-pdf__error-title").textContent(),
+      "PDF 解析组件加载失败",
+    )
+    await workerPage.close()
+
+    logStep("旧内核 + WebAssembly 缺失：still 可打开 PDF（兼容构建与补丁）")
+    const legacyPage = await desktopContext.newPage()
+    await legacyPage.addInitScript(() => {
+      // 模拟 Chrome < 119 / 企业策略裁剪：这些 API 在旧内核中不存在。
+      delete Promise.withResolvers
+      delete globalThis.structuredClone
+      delete Uint8Array.prototype.toHex
+      delete Uint8Array.prototype.toBase64
+      delete Uint8Array.prototype.fromBase64
+      delete Uint8Array.prototype.setFromBase64
+      delete Uint8Array.prototype.setFromHex
+      delete Map.prototype.getOrInsert
+      delete Map.prototype.getOrInsertComputed
+      delete WeakMap.prototype.getOrInsert
+      delete WeakMap.prototype.getOrInsertComputed
+      delete Set.prototype.union
+      delete Set.prototype.intersection
+      delete Set.prototype.difference
+      delete Math.sumPrecise
+      // 模拟企业策略禁用 WebAssembly。
+      Object.defineProperty(globalThis, "WebAssembly", {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      })
+      delete globalThis.WebAssembly
+    })
+    await legacyPage.goto(`/read/${encodeURIComponent(uploaded.bookId)}`, {
+      waitUntil: "domcontentloaded",
+    })
+    await legacyPage
+      .locator('.iread-pdf[data-pdf-ready="true"]')
+      .waitFor({ timeout: 30_000 })
+    await legacyPage
+      .locator('.iread-pdf__page[data-state="ready"] canvas')
+      .first()
+      .waitFor({ timeout: 30_000 })
+    assert.equal(
+      Number(await legacyPage.locator(".iread-pdf").getAttribute("data-pdf-page-count")),
+      PAGE_COUNT,
+      "兼容构建必须仍能解析真实 PDF",
+    )
+    assert.equal(
+      await legacyPage.locator(".iread-pdf").getAttribute("data-error-code"),
+      null,
+      "旧内核兼容路径不得残留错误码",
+    )
+    await legacyPage.close()
 
     logStep("重试打开：失败后重试成功，错误/loading/底部 notice 全部清除")
     const retryPage = await desktopContext.newPage()

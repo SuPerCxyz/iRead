@@ -1,10 +1,12 @@
+import "./pdfjs-compat"
 import {
   AnnotationLayer,
   GlobalWorkerOptions,
   RenderingCancelledException,
   TextLayer,
   getDocument,
-} from "pdfjs-dist"
+  version as PDFJS_VERSION,
+} from "pdfjs-dist/legacy/build/pdf.mjs"
 import type {
   PDFDocumentLoadingTask,
   PDFDocumentProxy,
@@ -14,7 +16,8 @@ import type {
 } from "pdfjs-dist"
 import { findPdfPageMatches, PDF_SEARCH_LIMIT as SEARCH_LIMIT, type PdfSearchMatch } from "./search-model"
 export type { PdfSearchMatch } from "./search-model"
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url"
+import workerSrc from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"
+import workerCompatSrc from "./pdf.worker.compat.mjs?url&no-inline"
 
 import type { BookFormat } from "@/features/library/types"
 
@@ -51,10 +54,17 @@ import {
   PDF_RANGE_CHUNK_SIZE,
   PdfLoadError,
   fetchInitialRange,
-  pdfErrorForStatus,
   type PdfNetworkRequest,
   type PdfNetworkStats,
 } from "./range"
+import {
+  buildPdfDiagnosticsText,
+  isPdfWasmAvailable,
+  pdfLoadErrorTitle,
+  sanitizePdfErrorMessage,
+  sanitizePdfErrorDetail,
+  toPdfLoadError,
+} from "./load-error"
 import { pdfPageKey, renderKeyId } from "../cache/resource-key"
 import type { ReaderCacheRuntime } from "../session/reader-cache-runtime"
 import {
@@ -66,9 +76,21 @@ import {
 } from "./outline"
 import { PdfOpenWatchdog } from "./open-watchdog"
 
-GlobalWorkerOptions.workerSrc = workerSrc
+const PDFJS_ASSET_ROOT = `${import.meta.env.BASE_URL}pdfjs/`
+const PDFJS_ENGINE_MODE = "legacy"
+/**
+ * 真实 worker 与 fake worker 都走同一个兼容入口；query 指向 Vite 产出的
+ * 带 hash worker 模块，兼容脚本负责在 worker 全局补 withResolvers/try。
+ * 兼容入口本身也由 Vite 输出到 /assets，避免反向代理只放行 /assets 时失效。
+ */
+const PDFJS_WORKER_COMPAT_URL = new URL(workerCompatSrc, import.meta.url)
+PDFJS_WORKER_COMPAT_URL.searchParams.set(
+  "src",
+  new URL(workerSrc, import.meta.url).href,
+)
+const PDFJS_WORKER_SRC = PDFJS_WORKER_COMPAT_URL.href
 
-const PDFJS_ASSET_ROOT = "/pdfjs/"
+GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC
 const MAX_CANVAS_PIXELS = 8_000_000
 /** 打开 PDF 的绝对上限；真正判断卡死的是下面的停滞看门狗。 */
 const OPEN_TIMEOUT_MS = 120_000
@@ -171,6 +193,36 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError"
 }
 
+/** 优先 Clipboard API；远程桌面/非 HTTPS 环境下回退到隐藏 textarea。 */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 权限被策略拒绝时继续走 execCommand 回退。
+  }
+  try {
+    const area = document.createElement("textarea")
+    area.value = text
+    area.setAttribute("readonly", "true")
+    area.style.position = "fixed"
+    area.style.top = "0"
+    area.style.left = "0"
+    area.style.width = "1px"
+    area.style.height = "1px"
+    area.style.opacity = "0"
+    document.body.append(area)
+    area.select()
+    const copied = document.execCommand("copy")
+    area.remove()
+    return copied
+  } catch {
+    return false
+  }
+}
+
 function isRenderingCancelled(error: unknown): boolean {
   return (
     error instanceof RenderingCancelledException ||
@@ -196,61 +248,6 @@ function safeExternalUrl(value: string): string | null {
     return null
   }
   return null
-}
-
-function toLoadError(error: unknown): PdfLoadError {
-  if (error instanceof PdfLoadError) {
-    return error
-  }
-  if (error instanceof Error) {
-    if (error.name === "PasswordException") {
-      return new PdfLoadError(
-        "password_required",
-        "这份 PDF 受密码保护；当前阅读器没有输入密码的入口，请联系书库管理员提供无密码版本。",
-        { retryable: false, cause: error },
-      )
-    }
-    if (error.name === "InvalidPDFException") {
-      return new PdfLoadError(
-        "invalid_pdf",
-        "PDF 文件已损坏或结构不受支持，无法显示。",
-        { retryable: false, cause: error },
-      )
-    }
-    if (error.name === "MissingPDFException") {
-      return new PdfLoadError(
-        "missing_pdf",
-        "PDF 原件不存在或已被移除。",
-        { retryable: false, cause: error },
-      )
-    }
-    if (error.name === "UnexpectedResponseException") {
-      const status =
-        typeof (error as unknown as { status?: unknown }).status === "number"
-          ? (error as unknown as { status: number }).status
-          : 0
-      if (status > 0) {
-        return pdfErrorForStatus(status, "", "")
-      }
-      return new PdfLoadError(
-        "unexpected_response",
-        "读取 PDF 时服务器返回了意外响应，请重试。",
-        { retryable: true, cause: error },
-      )
-    }
-    if (error.name === "TimeoutError") {
-      return new PdfLoadError(
-        "timeout",
-        "打开 PDF 超时，请检查网络后重试。",
-        { retryable: true, cause: error },
-      )
-    }
-  }
-  return new PdfLoadError(
-    "pdf_load_failed",
-    "无法打开这份 PDF。请重试；如果问题持续，请检查原件是否完整。",
-    { retryable: true, cause: error },
-  )
 }
 
 /**
@@ -333,6 +330,8 @@ export class PdfReaderEngine {
   #errorOverlay: HTMLDivElement | null = null
   #errorTitle: HTMLHeadingElement | null = null
   #errorMessage: HTMLParagraphElement | null = null
+  #errorDetail: HTMLParagraphElement | null = null
+  #errorCopy: HTMLButtonElement | null = null
   #searchPanel: HTMLDivElement | null = null
   #searchInput: HTMLInputElement | null = null
   #searchStatus: HTMLParagraphElement | null = null
@@ -449,7 +448,7 @@ export class PdfReaderEngine {
         if (mountId !== this.#mountId || signal.aborted || isAbortError(error)) {
           return
         }
-        this.#showFatalError(toLoadError(error))
+        this.#showFatalError(toPdfLoadError(error))
       },
     )
     await this.#readyPromise
@@ -515,6 +514,10 @@ export class PdfReaderEngine {
     this.#zoomIndicator = null
     this.#loading = null
     this.#errorOverlay = null
+    this.#errorTitle = null
+    this.#errorMessage = null
+    this.#errorDetail = null
+    this.#errorCopy = null
     this.#searchPanel = null
     this.#searchInput = null
     this.#searchStatus = null
@@ -1119,21 +1122,66 @@ export class PdfReaderEngine {
       "iread-pdf__error-message",
       "请重试；如果问题持续，请返回书库。",
     )
+    const detail = createElement("p", "iread-pdf__error-detail", "")
+    detail.hidden = true
+    detail.style.cssText =
+      "margin:0;max-width:34rem;font-size:12px;line-height:1.5;opacity:.72;word-break:break-word;"
     const actions = createElement("div", "iread-pdf__error-actions")
     const retry = createButton("重试打开 PDF", "重试", "iread-pdf__button iread-pdf__button--primary")
     retry.addEventListener("click", () => {
       void this.#retryMount()
+    })
+    const copy = createButton(
+      "复制 PDF 诊断信息",
+      "复制诊断信息",
+      "iread-pdf__button iread-pdf__button--small",
+    )
+    copy.dataset.pdfCopyDiagnostics = "true"
+    copy.addEventListener("click", () => {
+      const error = this.#lastError
+      if (error === null) {
+        return
+      }
+      const detailText =
+        error.detail.length > 0
+          ? error.detail
+          : sanitizePdfErrorDetail(error.cause ?? error)
+      const text = buildPdfDiagnosticsText({
+        code: error.code,
+        detail: detailText,
+        pageCount:
+          this.#pageCount > 0
+            ? this.#pageCount
+            : this.#manifest !== null && isPdfManifest(this.#manifest)
+              ? this.#manifest.formatData.pageCount
+              : 0,
+        bookId: this.#manifest?.bookId ?? "",
+        pdfjsVersion: PDFJS_VERSION,
+        mode: PDFJS_ENGINE_MODE,
+      })
+      copy.disabled = true
+      void copyTextToClipboard(text).then((copied) => {
+        copy.textContent = copied ? "已复制诊断信息" : "复制失败"
+        copy.dataset.copyState = copied ? "copied" : "failed"
+        window.setTimeout(() => {
+          copy.textContent = "复制诊断信息"
+          copy.disabled = false
+          delete copy.dataset.copyState
+        }, 2_000)
+      })
     })
     const back = createButton("返回书库", "返回", "iread-pdf__button")
     back.hidden = this.#options.onBack === undefined
     back.addEventListener("click", () => {
       this.#options.onBack?.()
     })
-    actions.append(retry, back)
-    overlay.append(title, message, actions)
+    actions.append(retry, copy, back)
+    overlay.append(title, message, detail, actions)
     this.#errorOverlay = overlay
     this.#errorTitle = title
     this.#errorMessage = message
+    this.#errorDetail = detail
+    this.#errorCopy = copy
     return overlay
   }
 
@@ -1297,7 +1345,7 @@ export class PdfReaderEngine {
         this.#recordRequest(request)
       },
       onError: (error: unknown) => {
-        this.#showFatalError(toLoadError(error), true)
+        this.#showFatalError(toPdfLoadError(error), true)
       },
     })
     this.#transport = transport
@@ -1314,6 +1362,10 @@ export class PdfReaderEngine {
       enableXfa: false,
       enableScripting: false,
       useSystemFonts: true,
+      // 企业策略/CSP 可能整体移除或禁止编译 WebAssembly。PDF.js 6.5 支持
+      // useWasm:false，此时图像解码走 JS 回退；先探测再决定，避免打开到
+      // 一半才因 wasm 失败。
+      useWasm: isPdfWasmAvailable(),
       maxImageSize: 100_000_000,
       cMapUrl: `${PDFJS_ASSET_ROOT}cmaps/`,
       cMapPacked: true,
@@ -1418,9 +1470,19 @@ export class PdfReaderEngine {
     this.#lastError = null
     if (this.#root !== null) {
       delete this.#root.dataset.errorCode
+      delete this.#root.dataset.errorDetail
     }
     if (this.#errorOverlay !== null) {
       this.#errorOverlay.hidden = true
+    }
+    if (this.#errorDetail !== null) {
+      this.#errorDetail.hidden = true
+      this.#errorDetail.textContent = ""
+    }
+    if (this.#errorCopy !== null) {
+      this.#errorCopy.disabled = false
+      this.#errorCopy.textContent = "复制诊断信息"
+      delete this.#errorCopy.dataset.copyState
     }
     if (this.#noticeTimer !== null) {
       window.clearTimeout(this.#noticeTimer)
@@ -1442,24 +1504,40 @@ export class PdfReaderEngine {
     if (this.#loading !== null) {
       this.#loading.hidden = true
     }
+    const rawError = error.cause ?? error
+    const detail =
+      error.detail.length > 0
+        ? error.detail
+        : sanitizePdfErrorDetail(rawError)
     if (this.#root !== null) {
       this.#root.dataset.pdfState = "error"
       this.#root.dataset.errorCode = error.code
+      if (detail.length > 0) {
+        this.#root.dataset.errorDetail = detail
+      } else {
+        delete this.#root.dataset.errorDetail
+      }
     }
+    // 保留原始异常名/消息，远程桌面用户无权开 DevTools 时也能复制反馈。
+    console.error(
+      "[iread-pdf]",
+      rawError instanceof Error ? rawError.name : error.name,
+      sanitizePdfErrorMessage(rawError),
+    )
     if (this.#errorTitle !== null) {
-      this.#errorTitle.textContent =
-        error.code === "unauthenticated"
-          ? "登录状态已失效"
-          : error.code === "file_version_conflict"
-            ? "PDF 原件已更新"
-            : error.code === "password_required"
-              ? "PDF 受密码保护"
-              : keepContent
-                ? "PDF 内容加载中断"
-                : "无法打开 PDF"
+      this.#errorTitle.textContent = pdfLoadErrorTitle(error.code, keepContent)
     }
     if (this.#errorMessage !== null) {
       this.#errorMessage.textContent = error.message
+    }
+    if (this.#errorDetail !== null) {
+      this.#errorDetail.textContent = `技术详情：${detail}`
+      this.#errorDetail.hidden = detail.length === 0
+    }
+    if (this.#errorCopy !== null) {
+      this.#errorCopy.disabled = false
+      this.#errorCopy.textContent = "复制诊断信息"
+      delete this.#errorCopy.dataset.copyState
     }
     if (this.#errorOverlay !== null) {
       this.#errorOverlay.hidden = false
