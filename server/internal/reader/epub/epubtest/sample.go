@@ -20,6 +20,8 @@ type Options struct {
 	ObfuscateFont string
 	// EncryptContent 为 true 时对第一章声明 AES 内容加密。
 	EncryptContent bool
+	// MimetypeMethod 控制 mimetype 条目的压缩方法；零值按 zip.Store。
+	MimetypeMethod uint16
 }
 
 // Sample 是生成的 EPUB 字节与测试期望值。
@@ -121,7 +123,11 @@ func Build(options Options) (*Sample, error) {
 
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
-	if err := writeZIPEntry(writer, "mimetype", []byte("application/epub+zip"), zip.Store); err != nil {
+	mimetypeMethod := options.MimetypeMethod
+	if mimetypeMethod == 0 {
+		mimetypeMethod = zip.Store
+	}
+	if err := writeZIPEntry(writer, "mimetype", []byte("application/epub+zip"), mimetypeMethod); err != nil {
 		return nil, err
 	}
 	container := `<?xml version="1.0" encoding="utf-8"?>

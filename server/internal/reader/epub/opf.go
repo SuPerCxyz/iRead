@@ -83,8 +83,10 @@ type itemInfo struct {
 
 // readPackage 读取 mimetype、container.xml 与 OPF，并建立 OPF manifest 索引。
 func readPackage(ctx context.Context, archive *openedArchive) (*parsedPackage, error) {
+	// 与上传校验/索引保持一致：允许 mimetype 被压缩或不在首个条目，
+	// 但解压内容必须严格匹配且读取不超过 64 字节。
 	mimetypeFile := archive.files["mimetype"]
-	if mimetypeFile == nil || mimetypeFile.Method != zip.Store {
+	if mimetypeFile == nil {
 		return nil, ErrInvalidBook
 	}
 	mimetype, err := readZipEntry(ctx, mimetypeFile, 64)

@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -381,6 +382,27 @@ func TestReindexKeepsOldCoverVersionIsolated(t *testing.T) {
 
 func colorBlue() color.Color { return color.RGBA{R: 20, G: 80, B: 200, A: 255} }
 func colorRed() color.Color  { return color.RGBA{R: 200, G: 40, B: 40, A: 255} }
+
+func TestManagerIndexesEPUBWithDeflatedMimetype(t *testing.T) {
+	env := newJobsEnv(t)
+	data := buildEPUB(t, epubSampleOptions{
+		nav:            true,
+		mimetypeMethod: zip.Deflate,
+	})
+	bookID, taskID := env.insertBook("epub", "Deflated Mimetype", data)
+	env.startManager(env.manager(1))
+	task := env.waitTask(taskID, store.TaskStateSucceeded)
+	if task.ErrorCode != nil {
+		t.Fatalf("deflated mimetype 不应导致索引失败: %v", task.ErrorCode)
+	}
+	var status string
+	if err := env.db.QueryRow(`SELECT status FROM books WHERE id = ?`, bookID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "ready" {
+		t.Fatalf("book status = %q，期望 ready", status)
+	}
+}
 
 func TestCoverGenerationFailureIsPartialButBookReady(t *testing.T) {
 	env := newJobsEnv(t)

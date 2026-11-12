@@ -86,9 +86,11 @@ function isCsrfFailure(error: ApiError): boolean {
 
 function toUploadErrorInfo(error: unknown): UploadErrorInfo {
   if (error instanceof ApiError) {
+    const reason = error.details.reason
     return {
       code: error.code,
       message: describeApiError(error),
+      reason: typeof reason === "string" && reason.length > 0 ? reason : undefined,
       retryable: isRetryableError(error),
     }
   }
@@ -673,7 +675,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       for (const file of incoming) {
         const target = itemsRef.current.find(
           (item) =>
-            item.phase === "needs-file" &&
+            (item.phase === "needs-file" || item.phase === "failed") &&
             item.fileName === file.name &&
             item.byteSize === file.size &&
             !filesRef.current.has(item.clientUploadId),

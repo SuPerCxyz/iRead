@@ -7,13 +7,14 @@ import (
 )
 
 type epubSampleOptions struct {
-	nav           bool
-	ncx           bool
-	cover         bool
-	coverSize     pngOptions
-	brokenCover   bool
-	nonce         int
-	encryptionXML []byte
+	nav            bool
+	ncx            bool
+	cover          bool
+	coverSize      pngOptions
+	brokenCover    bool
+	nonce          int
+	encryptionXML  []byte
+	mimetypeMethod uint16
 }
 
 func buildEPUB(t *testing.T, options epubSampleOptions) []byte {
@@ -54,7 +55,7 @@ func buildEPUB(t *testing.T, options epubSampleOptions) []byte {
 </package>`, joinLines(manifest), spineToc)
 
 	entries := []zipEntry{
-		{name: "mimetype", data: []byte("application/epub+zip"), method: zip.Store},
+		{name: "mimetype", data: []byte("application/epub+zip"), method: options.mimetypeMethod},
 		{name: "META-INF/container.xml", data: []byte(`<?xml version="1.0"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
   <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>

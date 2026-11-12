@@ -88,8 +88,11 @@ func validateEPUB(ctx context.Context, f *os.File, size int64) (Result, error) {
 		return Result{}, err
 	}
 
+	// 规范要求 mimetype 以 stored 方式作为首个条目，但部分生产工具会压缩
+	// 或把它放到末尾；只要内容严格匹配且读取受 64 字节上限约束，仍可安全
+	// 兼容。ZIP 加密、路径穿越、压缩比与重复条目等检查已在 inspectZIP 完成。
 	mimetype, ok := archive.files["mimetype"]
-	if !ok || mimetype.Method != zip.Store {
+	if !ok {
 		return rejection(ReasonCorruptContainer, nil)
 	}
 	mimetypeData, err := readArchiveEntry(ctx, mimetype, maxMimetypeBytes)

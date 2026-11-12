@@ -53,12 +53,15 @@ func TestUploadIntentConflictClaimAndRetry(t *testing.T) {
 	if _, ok, err := database.ClaimUploadContent(ctx, intent.ID, ".staging/"+intent.ID+".part", testLibraryNow()); err != nil || ok {
 		t.Fatalf("并发 claim 应失败: ok=%v err=%v", ok, err)
 	}
-	failed, err := database.MarkUploadFailed(ctx, intent.ID, 2, "upload_interrupted", "中断", true, testLibraryNow())
+	failed, err := database.MarkUploadFailed(ctx, intent.ID, 2, "invalid_file", "校验失败", "corrupt_container", false, testLibraryNow())
 	if err != nil || failed.State != "failed" || failed.ErrorCode == nil {
 		t.Fatalf("MarkUploadFailed = %+v, %v", failed, err)
 	}
+	if failed.ErrorReason == nil || *failed.ErrorReason != "corrupt_container" {
+		t.Fatalf("ErrorReason = %v, 期望 corrupt_container", failed.ErrorReason)
+	}
 	retried, ok, err := database.ClaimUploadContent(ctx, intent.ID, ".staging/"+intent.ID+".part", testLibraryNow())
-	if err != nil || !ok || retried.State != "uploading" || retried.ErrorCode != nil {
+	if err != nil || !ok || retried.State != "uploading" || retried.ErrorCode != nil || retried.ErrorReason != nil {
 		t.Fatalf("失败后重试 claim = %+v, %v, %v", retried, ok, err)
 	}
 }

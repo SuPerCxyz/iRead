@@ -46,6 +46,7 @@ import { describeUploadError } from "./errors"
 import {
   canCancelUpload,
   canRemoveUpload,
+  canReselectUpload,
   canRetryUpload,
   taskProgressPercent,
   uploadPhaseBadgeVariant,
@@ -200,7 +201,7 @@ function UploadRow({
             重试
           </Button>
         ) : null}
-        {item.phase === "needs-file" ? (
+        {canReselectUpload(item) ? (
           <Button
             type="button"
             size="sm"

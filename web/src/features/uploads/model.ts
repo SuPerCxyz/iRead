@@ -243,12 +243,13 @@ export function applyTaskToItem(
 }
 
 export function restorePhaseForMissingFile(item: UploadItem): UploadItem {
+  // failed 是终态诊断结果，恢复后保留服务端 reason；不能改写成 needs-file，
+  // 否则用户刷新页面就看不到具体失败原因。
   if (
     item.phase === "queued" ||
     item.phase === "creating" ||
     item.phase === "uploading" ||
-    item.phase === "verifying" ||
-    item.phase === "failed"
+    item.phase === "verifying"
   ) {
     return { ...item, phase: "needs-file" }
   }
@@ -351,16 +352,11 @@ export function canCancelUpload(item: UploadItem): boolean {
   if (item.phase === "queued" || item.phase === "creating") {
     return true
   }
-  if (
-    item.phase === "uploading" ||
-    item.phase === "verifying" ||
-    item.phase === "failed"
-  ) {
+  if (item.phase === "uploading" || item.phase === "verifying") {
     return (
       item.uploadId !== null &&
       (item.state === "awaiting-upload" ||
         item.state === "uploading" ||
-        item.state === "failed" ||
         item.state === null)
     )
   }
@@ -369,6 +365,10 @@ export function canCancelUpload(item: UploadItem): boolean {
 
 export function canRetryUpload(item: UploadItem): boolean {
   return item.phase === "failed" && item.error?.retryable !== false
+}
+
+export function canReselectUpload(item: UploadItem): boolean {
+  return item.phase === "failed" || item.phase === "needs-file"
 }
 
 export function canRemoveUpload(item: UploadItem): boolean {
@@ -454,6 +454,10 @@ function readError(value: unknown): UploadErrorInfo | null {
   return {
     code: value.code,
     message: typeof value.message === "string" ? value.message : "",
+    reason:
+      typeof value.reason === "string" && value.reason.length > 0
+        ? value.reason
+        : undefined,
     retryable: value.retryable !== false,
   }
 }

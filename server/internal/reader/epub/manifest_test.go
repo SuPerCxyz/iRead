@@ -1,6 +1,7 @@
 package epub_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -55,6 +56,17 @@ func buildReaderManifest(t *testing.T, builderDir string, source epub.Source) ep
 		t.Fatalf("Build() error = %v", err)
 	}
 	return manifest
+}
+
+func TestBuildManifestAcceptsDeflatedMimetype(t *testing.T) {
+	_, booksDir, source, _ := buildReaderSample(t, epubtest.Options{
+		Version:        3,
+		MimetypeMethod: zip.Deflate,
+	})
+	manifest := buildReaderManifest(t, booksDir, source)
+	if !manifest.ReadingCapabilities.CanRead {
+		t.Fatalf("deflated mimetype 应可阅读: %+v", manifest.ReadingCapabilities)
+	}
 }
 
 func TestBuildManifestEPUB3(t *testing.T) {

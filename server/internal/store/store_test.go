@@ -46,8 +46,8 @@ func TestOpenEnablesWALAndMigrates(t *testing.T) {
 	if err := database.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrations != 4 {
-		t.Fatalf("迁移数量 = %d，期望 4", migrations)
+	if migrations != 5 {
+		t.Fatalf("迁移数量 = %d，期望 5", migrations)
 	}
 
 	var table string
@@ -71,7 +71,7 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrations != 4 {
+	if migrations != 5 {
 		t.Fatalf("重复打开后迁移数量 = %d", migrations)
 	}
 }

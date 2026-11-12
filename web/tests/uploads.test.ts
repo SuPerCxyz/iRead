@@ -5,6 +5,7 @@ import {
   applyUploadDTO,
   canCancelUpload,
   canRemoveUpload,
+  canReselectUpload,
   canRetryUpload,
   createUploadItem,
   MAX_UPLOAD_BYTES,
@@ -19,7 +20,12 @@ import {
   uploadProgressPercent,
   uploadStatusText,
 } from "../src/features/uploads/model"
-import type { UploadDTO, UploadItem } from "../src/features/uploads/types"
+import { describeUploadError } from "../src/features/uploads/errors"
+import {
+  parseUploadDTO,
+  type UploadDTO,
+  type UploadItem,
+} from "../src/features/uploads/types"
 import type { BackgroundTask } from "../src/features/library/types"
 
 function file(name: string, size = 100, lastModified = 1) {
@@ -196,6 +202,12 @@ describe("upload queue", () => {
       ),
     ).toBe(false)
     expect(
+      canCancelUpload(item({ phase: "failed", state: "failed" })),
+    ).toBe(false)
+    expect(canReselectUpload(item({ phase: "failed" }))).toBe(true)
+    expect(canReselectUpload(item({ phase: "needs-file" }))).toBe(true)
+    expect(canReselectUpload(item({ phase: "uploading" }))).toBe(false)
+    expect(
       canRetryUpload(
         item({
           phase: "failed",
@@ -234,7 +246,7 @@ describe("upload queue", () => {
       "needs-file",
     )
     expect(restorePhaseForMissingFile(item({ phase: "failed" })).phase).toBe(
-      "needs-file",
+      "failed",
     )
     expect(
       restorePhaseForMissingFile(
@@ -251,6 +263,28 @@ describe("upload queue", () => {
     expect(
       uploadStatusText({ ...withTask, taskUnavailable: true }),
     ).toBe("已保存，整理状态暂不可用")
+  })
+
+  it("keeps the server failure reason for specific diagnostics", () => {
+    const parsed = parseUploadDTO({
+      ...dto({ state: "failed" }),
+      error: {
+        code: "invalid_file",
+        message: "文件校验失败",
+        reason: "corrupt_container",
+        retryable: false,
+      },
+    })
+    expect(parsed.error?.reason).toBe("corrupt_container")
+    expect(describeUploadError(parsed.error)).toContain("已损坏")
+
+    const failed = applyUploadDTO(item(), parsed)
+    expect(failed.phase).toBe("failed")
+    const restored = parseUploadSnapshot(
+      JSON.parse(serializeUploadSnapshot([failed])),
+    )
+    expect(restored.items[0]?.phase).toBe("failed")
+    expect(restored.items[0]?.error?.reason).toBe("corrupt_container")
   })
 
   it("serializes only queue metadata and restores it with a schema bound", () => {

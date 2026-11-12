@@ -61,8 +61,8 @@ func TestReaderMigrationUpgradesStageThreeDatabase(t *testing.T) {
 	}
 
 	database := openTestStore(t, dir)
-	if got := migrationCount(t, database.db); got != 4 {
-		t.Fatalf("升级后迁移数量 = %d，期望 4", got)
+	if got := migrationCount(t, database.db); got != 5 {
+		t.Fatalf("升级后迁移数量 = %d，期望 5", got)
 	}
 	for _, table := range []string{
 		"book_manifests", "reading_progress", "progress_mutations",
@@ -319,8 +319,8 @@ func TestReaderRowsSurviveReopen(t *testing.T) {
 	}
 
 	second := openTestStore(t, dir)
-	if got := migrationCount(t, second.db); got != 4 {
-		t.Fatalf("重开后迁移数量 = %d，期望 4", got)
+	if got := migrationCount(t, second.db); got != 5 {
+		t.Fatalf("重开后迁移数量 = %d，期望 5", got)
 	}
 	for _, table := range []string{
 		"book_manifests", "reading_progress", "progress_mutations",

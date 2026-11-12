@@ -41,7 +41,7 @@ func (s *Service) recoverIntent(ctx context.Context, intent store.UploadIntent) 
 	switch intent.State {
 	case StateUploading:
 		if _, err := s.store.MarkUploadFailed(ctx, intent.ID, intent.BytesReceived,
-			"upload_interrupted", "上传在服务重启时中断，请重试", true, s.clock()); err != nil {
+			"upload_interrupted", "上传在服务重启时中断，请重试", "", true, s.clock()); err != nil {
 			return err
 		}
 		s.removeTemporary(ctx, intent)

@@ -10,6 +10,7 @@ import (
 type uploadErrorDTO struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
+	Reason    string `json:"reason,omitempty"`
 	Retryable bool   `json:"retryable"`
 }
 
@@ -49,7 +50,11 @@ func uploadDTOFrom(intent store.UploadIntent) uploadDTO {
 		if intent.ErrorMessage != nil {
 			message = *intent.ErrorMessage
 		}
-		dto.Error = &uploadErrorDTO{Code: *intent.ErrorCode, Message: message, Retryable: intent.ErrorRetryable}
+		reason := ""
+		if intent.ErrorReason != nil {
+			reason = *intent.ErrorReason
+		}
+		dto.Error = &uploadErrorDTO{Code: *intent.ErrorCode, Message: message, Reason: reason, Retryable: intent.ErrorRetryable}
 	}
 	return dto
 }

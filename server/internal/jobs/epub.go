@@ -135,9 +135,11 @@ func extractEPUB(ctx context.Context, filePath, displayTitle string, report phas
 		}
 	}
 
+	// 与上传校验保持一致：允许 mimetype 被压缩或不在首个条目，但解压内容
+	// 必须严格匹配且读取不超过 64 字节。
 	mimetypeFile, ok := files["mimetype"]
-	if !ok || mimetypeFile.Method != zip.Store {
-		return extraction{}, invalidBookFile(errors.New("mimetype 不是 stored 条目"))
+	if !ok {
+		return extraction{}, invalidBookFile(errors.New("缺少 mimetype"))
 	}
 	mimetypeData, err := readZipFile(ctx, mimetypeFile, 64)
 	if err != nil {

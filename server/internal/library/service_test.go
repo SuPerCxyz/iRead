@@ -518,6 +518,9 @@ func TestValidationRejectedLeavesNoBook(t *testing.T) {
 	if failed.State != StateFailed || failed.ErrorCode == nil || *failed.ErrorCode != "invalid_file" {
 		t.Fatalf("失败意图 = %+v", failed)
 	}
+	if failed.ErrorReason == nil || *failed.ErrorReason != formats.ReasonArchivePathTraversal {
+		t.Fatalf("ErrorReason = %v，期望 %q", failed.ErrorReason, formats.ReasonArchivePathTraversal)
+	}
 	if count := env.bookCount(); count != 0 {
 		t.Fatalf("校验拒绝不应建书，count=%d", count)
 	}

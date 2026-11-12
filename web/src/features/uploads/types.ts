@@ -16,6 +16,7 @@ export type UploadState = (typeof UPLOAD_STATES)[number]
 export interface UploadErrorInfo {
   code: string
   message: string
+  reason?: string
   retryable: boolean
 }
 
@@ -157,10 +158,15 @@ export function parseUploadDTO(value: unknown): UploadDTO {
     if (!isRecord(errorValue)) {
       protocolError("服务器返回的上传错误无效。")
     }
+    const reason =
+      typeof errorValue.reason === "string" && errorValue.reason.length > 0
+        ? errorValue.reason
+        : undefined
     error = {
       code: readString(errorValue, "code", "上传错误码"),
       message:
         typeof errorValue.message === "string" ? errorValue.message : "",
+      reason,
       retryable: readBoolean(errorValue, "retryable", "上传可重试标记"),
     }
   }

@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -81,6 +82,7 @@ type Error struct {
 	Code      string
 	Message   string
 	Reason    string
+	Field     string
 	Retryable bool
 }
 
@@ -94,6 +96,11 @@ func newError(status int, code, message string) *Error {
 
 func newReasonError(status int, code, message, reason string) *Error {
 	return &Error{Status: status, Code: code, Message: message, Reason: reason}
+}
+
+// newValidationError 表示可定位到字段的语义校验失败，统一映射为 422。
+func newValidationError(field, reason, message string) *Error {
+	return &Error{Status: 422, Code: "invalid_request", Message: message, Reason: reason, Field: field}
 }
 
 // Config 是 Service 依赖。
@@ -121,6 +128,10 @@ type Service struct {
 	now        func() time.Time
 	validator  Validator
 	writeSlots chan struct{}
+	// renameMu 串行化书名/原件重命名，并让下载读取在改名期间看到旧或新
+	// 存储路径之一，而不是两者之间的瞬时状态。其他阅读端点每次按数据库
+	// 登记路径打开，不缓存路径。
+	renameMu sync.RWMutex
 }
 
 // NewService 构造服务、创建隔离临时目录并执行启动恢复。
@@ -759,10 +770,14 @@ func (s *Service) UploadContent(ctx context.Context, input UploadContentInput) (
 }
 
 func (s *Service) failUpload(ctx context.Context, uploadID string, bytesReceived int64, code, message string, retryable bool) {
+	s.failUploadWithReason(ctx, uploadID, bytesReceived, code, message, "", retryable)
+}
+
+func (s *Service) failUploadWithReason(ctx context.Context, uploadID string, bytesReceived int64, code, message, reason string, retryable bool) {
 	// 客户端断开会取消请求 context，但失败状态仍必须落库，避免意图卡在 uploading。
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, err := s.store.MarkUploadFailed(cleanupCtx, uploadID, bytesReceived, code, message, retryable, s.clock()); err != nil {
+	if _, err := s.store.MarkUploadFailed(cleanupCtx, uploadID, bytesReceived, code, message, reason, retryable, s.clock()); err != nil {
 		s.logger.Warn("记录上传失败状态失败", "uploadId", uploadID, "error", err)
 	}
 }
@@ -810,7 +825,13 @@ func (s *Service) failValidation(ctx context.Context, intent store.UploadIntent,
 	if status == 422 && code == "invalid_file" && reason == "" {
 		reason = formats.ReasonCorruptContainer
 	}
-	s.failUpload(ctx, intent.ID, bytesReceived, code, message, status >= 500)
+	// 只记录意图标识、展示名、预留大小和稳定原因；不记录文件内容或绝对路径。
+	s.logger.Warn("上传文件校验失败",
+		"uploadId", intent.ID,
+		"fileName", intent.FileName,
+		"byteSize", intent.ExpectedSize,
+		"reason", reason)
+	s.failUploadWithReason(ctx, intent.ID, bytesReceived, code, message, reason, status >= 500)
 	apiErr := newReasonError(status, code, message, reason)
 	apiErr.Retryable = status >= 500
 	return apiErr

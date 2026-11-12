@@ -122,8 +122,8 @@ func TestOpenUpgradesStageOneDatabaseAndPreservesSettings(t *testing.T) {
 
 	database := openTestStore(t, dir)
 	ctx := context.Background()
-	if got := migrationCount(t, database.db); got != 4 {
-		t.Fatalf("升级后迁移数量 = %d，期望 4", got)
+	if got := migrationCount(t, database.db); got != 5 {
+		t.Fatalf("升级后迁移数量 = %d，期望 5", got)
 	}
 	record, err := database.GetAppearance(ctx)
 	if err != nil {
@@ -166,16 +166,16 @@ func TestMigrationsAreIdempotentAcrossReopen(t *testing.T) {
 	if err := rows.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(appliedAt) != 4 {
-		t.Fatalf("首次迁移数量 = %d，期望 4", len(appliedAt))
+	if len(appliedAt) != 5 {
+		t.Fatalf("首次迁移数量 = %d，期望 5", len(appliedAt))
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	second := openTestStore(t, dir)
-	if got := migrationCount(t, second.db); got != 4 {
-		t.Fatalf("重开后迁移数量 = %d，期望 4", got)
+	if got := migrationCount(t, second.db); got != 5 {
+		t.Fatalf("重开后迁移数量 = %d，期望 5", got)
 	}
 	for version, want := range appliedAt {
 		var got string
@@ -565,13 +565,21 @@ func TestUploadIntentConstraints(t *testing.T) {
 
 	var bytesReceived int
 	var commitPhase string
+	var errorReason sql.NullString
 	if err := db.QueryRow(`
-		SELECT bytes_received, commit_phase FROM upload_intents WHERE id = ?`, intentID,
-	).Scan(&bytesReceived, &commitPhase); err != nil {
+		SELECT bytes_received, commit_phase, error_reason FROM upload_intents WHERE id = ?`, intentID,
+	).Scan(&bytesReceived, &commitPhase, &errorReason); err != nil {
 		t.Fatal(err)
 	}
-	if bytesReceived != 0 || commitPhase != "none" {
-		t.Fatalf("upload intent 默认值 = bytes_received:%d commit_phase:%q", bytesReceived, commitPhase)
+	if bytesReceived != 0 || commitPhase != "none" || errorReason.Valid {
+		t.Fatalf("upload intent 默认值 = bytes_received:%d commit_phase:%q error_reason:%v", bytesReceived, commitPhase, errorReason)
+	}
+	mustExec(t, db, `UPDATE upload_intents SET error_reason = 'corrupt_container' WHERE id = ?`, intentID)
+	if err := db.QueryRow(`SELECT error_reason FROM upload_intents WHERE id = ?`, intentID).Scan(&errorReason); err != nil {
+		t.Fatal(err)
+	}
+	if !errorReason.Valid || errorReason.String != "corrupt_container" {
+		t.Fatalf("error_reason = %v", errorReason)
 	}
 
 	expectExecError(t, db, insertIntent, strings.Repeat("b", 32), "client-1", "另一个.epub", 100, "awaiting-upload", testTimestamp, testTimestamp, testTimestamp)

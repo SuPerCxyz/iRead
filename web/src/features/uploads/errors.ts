@@ -31,6 +31,7 @@ export function describeUploadError(
     status: CODE_STATUS[error.code],
     code: error.code,
     message: error.message,
+    reason: error.reason,
   })
 }
 

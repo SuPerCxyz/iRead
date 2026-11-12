@@ -19,6 +19,8 @@ const INVALID_FILE_REASONS: Record<string, string> = {
   corrupt_container: "文件已损坏或格式不完整。",
   encrypted_archive:
     "文件受加密或 DRM 保护，原件会保留，但当前无法阅读。",
+  archive_encrypted:
+    "文件受加密或 DRM 保护，原件会保留，但当前无法阅读。",
   archive_path_traversal: "压缩包包含不安全的路径，已拒绝上传。",
   archive_symlink: "压缩包包含不安全的链接，已拒绝上传。",
   archive_entry_limit: "压缩包条目数量超过安全限制。",

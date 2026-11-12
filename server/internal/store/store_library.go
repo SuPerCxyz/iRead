@@ -56,6 +56,7 @@ type UploadIntent struct {
 	TaskID            *string
 	ErrorCode         *string
 	ErrorMessage      *string
+	ErrorReason       *string
 	ErrorRetryable    bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -168,8 +169,8 @@ type BookListResult struct {
 
 const uploadIntentColumns = `id, client_upload_id, file_name, expected_size, byte_size, state,
 	bytes_received, temporary_rel_path, final_rel_path, commit_phase, book_id,
-	duplicate_of_book_id, task_id, error_code, error_message, error_retryable,
-	created_at, updated_at, expires_at`
+	duplicate_of_book_id, task_id, error_code, error_message, error_reason,
+	error_retryable, created_at, updated_at, expires_at`
 
 const bookSummaryColumns = `b.id, b.display_title, b.format, b.status, b.index_version,
 	b.created_at, b.updated_at, f.byte_size, COALESCE(m.authors_json, '[]'),
@@ -223,12 +224,12 @@ type libraryRowScanner interface {
 func scanUploadIntent(row libraryRowScanner) (UploadIntent, error) {
 	var intent UploadIntent
 	var byteSize, expectedSize, bytesReceived, retryable sql.NullInt64
-	var temporary, final, bookID, duplicateID, taskID, errorCode, errorMessage sql.NullString
+	var temporary, final, bookID, duplicateID, taskID, errorCode, errorMessage, errorReason sql.NullString
 	var commitPhase, createdAt, updatedAt, expiresAt string
 	if err := row.Scan(
 		&intent.ID, &intent.ClientUploadID, &intent.FileName, &expectedSize, &byteSize,
 		&intent.State, &bytesReceived, &temporary, &final, &commitPhase, &bookID,
-		&duplicateID, &taskID, &errorCode, &errorMessage, &retryable,
+		&duplicateID, &taskID, &errorCode, &errorMessage, &errorReason, &retryable,
 		&createdAt, &updatedAt, &expiresAt,
 	); err != nil {
 		return UploadIntent{}, err
@@ -244,6 +245,7 @@ func scanUploadIntent(row libraryRowScanner) (UploadIntent, error) {
 	intent.TaskID = stringPtr(taskID)
 	intent.ErrorCode = stringPtr(errorCode)
 	intent.ErrorMessage = stringPtr(errorMessage)
+	intent.ErrorReason = stringPtr(errorReason)
 	intent.ErrorRetryable = boolFromInt(retryable.Int64)
 	var err error
 	if intent.CreatedAt, err = parseDBTime(createdAt); err != nil {
@@ -312,8 +314,8 @@ func (s *Store) ClaimUploadContent(ctx context.Context, id, temporaryRelPath str
 		SET state = 'uploading', bytes_received = 0, byte_size = NULL,
 			temporary_rel_path = ?, final_rel_path = NULL, commit_phase = 'none',
 			book_id = NULL, duplicate_of_book_id = NULL, task_id = NULL,
-			error_code = NULL, error_message = NULL, error_retryable = 0,
-			updated_at = ?
+			error_code = NULL, error_message = NULL, error_reason = NULL,
+			error_retryable = 0, updated_at = ?
 		WHERE id = ? AND state IN ('awaiting-upload', 'failed')
 			AND commit_phase = 'none' AND expires_at > ?`,
 		temporaryRelPath, dbTime(now), id, dbTime(now))
@@ -328,18 +330,24 @@ func (s *Store) ClaimUploadContent(ctx context.Context, id, temporaryRelPath str
 	return intent, affected == 1, err
 }
 
-// MarkUploadFailed 在提交前把上传标记为失败；返回当前记录。
-func (s *Store) MarkUploadFailed(ctx context.Context, id string, bytesReceived int64, code, message string, retryable bool, now time.Time) (UploadIntent, error) {
+// MarkUploadFailed 在提交前把上传标记为失败；reason 为空时落库 NULL。
+// 返回当前记录。
+func (s *Store) MarkUploadFailed(ctx context.Context, id string, bytesReceived int64, code, message, reason string, retryable bool, now time.Time) (UploadIntent, error) {
 	retryFlag := 0
 	if retryable {
 		retryFlag = 1
 	}
+	var storedReason any
+	if reason != "" {
+		storedReason = reason
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE upload_intents
 		SET state = 'failed', bytes_received = ?, temporary_rel_path = NULL,
-			error_code = ?, error_message = ?, error_retryable = ?, updated_at = ?
+			error_code = ?, error_message = ?, error_reason = ?,
+			error_retryable = ?, updated_at = ?
 		WHERE id = ? AND state = 'uploading' AND commit_phase = 'none'`,
-		bytesReceived, code, message, retryFlag, dbTime(now), id)
+		bytesReceived, code, message, storedReason, retryFlag, dbTime(now), id)
 	if err != nil {
 		return UploadIntent{}, fmt.Errorf("store: 标记上传失败失败: %w", err)
 	}
@@ -351,7 +359,8 @@ func (s *Store) MarkUploadCancelled(ctx context.Context, id string, now time.Tim
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE upload_intents
 		SET state = 'cancelled', temporary_rel_path = NULL,
-			error_code = NULL, error_message = NULL, error_retryable = 0,
+			error_code = NULL, error_message = NULL, error_reason = NULL,
+			error_retryable = 0,
 			updated_at = ?
 		WHERE id = ? AND state IN ('awaiting-upload', 'uploading', 'failed')
 			AND commit_phase = 'none'`,
@@ -383,7 +392,8 @@ func (s *Store) MarkUploadDuplicate(ctx context.Context, id, bookID, sha256 stri
 		SET state = 'duplicate', byte_size = ?, bytes_received = ?, book_id = ?,
 			duplicate_of_book_id = ?, task_id = NULL, temporary_rel_path = NULL,
 			final_rel_path = NULL, commit_phase = 'none', error_code = NULL,
-			error_message = NULL, error_retryable = 0, updated_at = ?
+			error_message = NULL, error_reason = NULL, error_retryable = 0,
+			updated_at = ?
 		WHERE id = ? AND state = 'uploading' AND commit_phase = 'none'`,
 		byteSize, byteSize, bookID, bookID, dbTime(now), id)
 	if err != nil {
@@ -557,7 +567,7 @@ func (s *Store) CommitUpload(ctx context.Context, id string, now time.Time) erro
 		UPDATE upload_intents
 		SET state = 'stored', commit_phase = 'committed', bytes_received = byte_size,
 			temporary_rel_path = NULL, error_code = NULL, error_message = NULL,
-			error_retryable = 0, updated_at = ?
+			error_reason = NULL, error_retryable = 0, updated_at = ?
 		WHERE id = ?`, nowText, id); err != nil {
 		return fmt.Errorf("store: 提交上传意图失败: %w", err)
 	}
@@ -611,6 +621,51 @@ func (s *Store) BookFileByBookID(ctx context.Context, bookID string) (BookFile, 
 		return BookFile{}, err
 	}
 	return file, nil
+}
+
+// RenameBook 在同一事务内更新显示标题与原件的展示名/存储路径。
+// 文件移动由调用方完成；本方法只负责数据库状态，失败时不留下部分更新。
+func (s *Store) RenameBook(ctx context.Context, bookID, displayTitle, originalFileName, storageRelPath string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: 开始重命名事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE books SET display_title = ?, updated_at = ? WHERE id = ?`,
+		displayTitle, dbTime(now), bookID)
+	if err != nil {
+		return fmt.Errorf("store: 更新书籍标题失败: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取书籍标题更新结果失败: %w", err)
+	}
+	if affected != 1 {
+		return ErrBookNotFound
+	}
+
+	result, err = tx.ExecContext(ctx, `
+		UPDATE book_files
+		SET original_file_name = ?, storage_rel_path = ?
+		WHERE book_id = ?`,
+		originalFileName, storageRelPath, bookID)
+	if err != nil {
+		return fmt.Errorf("store: 更新原件登记失败: %w", err)
+	}
+	affected, err = result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 读取原件登记更新结果失败: %w", err)
+	}
+	if affected != 1 {
+		return ErrBookNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: 提交重命名事务失败: %w", err)
+	}
+	return nil
 }
 
 // UploadIntentsNeedingRecovery 返回启动恢复需要检查的意图。
@@ -677,8 +732,8 @@ func (s *Store) AbortPreparedUpload(ctx context.Context, id, code, message strin
 		UPDATE upload_intents
 		SET state = 'failed', commit_phase = 'none', temporary_rel_path = NULL,
 			final_rel_path = NULL, book_id = NULL, duplicate_of_book_id = NULL,
-			task_id = NULL, error_code = ?, error_message = ?, error_retryable = 1,
-			updated_at = ?
+			task_id = NULL, error_code = ?, error_message = ?, error_reason = NULL,
+			error_retryable = 1, updated_at = ?
 		WHERE id = ?`, code, message, nowText, id); err != nil {
 		return fmt.Errorf("store: 标记放弃意图失败: %w", err)
 	}

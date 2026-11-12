@@ -58,26 +58,94 @@ func TestEPUBRightsXMLIsUnreadable(t *testing.T) {
 	requireUnsupported(t, result, err, UnsupportedDRMProtected)
 }
 
-func TestEPUBMimetypeMustBeStored(t *testing.T) {
-	data := buildZIP(t, []zipSample{
-		{name: "mimetype", data: []byte(epubMimetype), method: zip.Deflate},
-		{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
-		{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
-	})
-	path := writeTempFile(t, "book.epub", data)
-	result, err := Validate(context.Background(), path, "epub")
-	requireReason(t, result, err, ReasonCorruptContainer)
+func TestEPUBMimetypeCompressionAndOrderCompatibility(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []zipSample
+	}{
+		{
+			name: "stored-first",
+			entries: []zipSample{
+				{name: "mimetype", data: []byte(epubMimetype), method: zip.Store},
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+			},
+		},
+		{
+			name: "deflated-first",
+			entries: []zipSample{
+				{name: "mimetype", data: []byte(epubMimetype), method: zip.Deflate},
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+			},
+		},
+		{
+			name: "deflated-last",
+			entries: []zipSample{
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+				{name: "mimetype", data: []byte(epubMimetype), method: zip.Deflate},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeTempFile(t, "book.epub", buildZIP(t, test.entries))
+			result, err := Validate(context.Background(), path, "epub")
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if !result.Readable || result.Format != FormatEPUB {
+				t.Fatalf("Readable/Format = %v/%q", result.Readable, result.Format)
+			}
+		})
+	}
 }
 
-func TestEPUBMimetypeValueMustMatch(t *testing.T) {
-	data := buildZIP(t, []zipSample{
-		{name: "mimetype", data: []byte("application/zip"), method: zip.Store},
-		{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
-		{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
-	})
-	path := writeTempFile(t, "book.epub", data)
-	result, err := Validate(context.Background(), path, "epub")
-	requireReason(t, result, err, ReasonCorruptContainer)
+func TestEPUBMimetypeRejections(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []zipSample
+	}{
+		{
+			name: "missing",
+			entries: []zipSample{
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+			},
+		},
+		{
+			name: "wrong-value-deflated",
+			entries: []zipSample{
+				{name: "mimetype", data: []byte("application/zip"), method: zip.Deflate},
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+			},
+		},
+		{
+			name: "too-long",
+			entries: []zipSample{
+				{name: "mimetype", data: []byte(epubMimetype + "\n"), method: zip.Deflate},
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+			},
+		},
+		{
+			name: "over-64-bytes",
+			entries: []zipSample{
+				{name: "mimetype", data: []byte(epubMimetype + strings.Repeat("x", maxMimetypeBytes)), method: zip.Deflate},
+				{name: "META-INF/container.xml", data: []byte(epubContainerXML)},
+				{name: "OEBPS/content.opf", data: []byte(epubPackageXML)},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeTempFile(t, "book.epub", buildZIP(t, test.entries))
+			result, err := Validate(context.Background(), path, "epub")
+			requireReason(t, result, err, ReasonCorruptContainer)
+		})
+	}
 }
 
 func TestEPUBMissingContainer(t *testing.T) {

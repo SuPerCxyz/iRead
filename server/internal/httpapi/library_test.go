@@ -488,6 +488,44 @@ func TestUnsupportedBookDetailHasNoTask(t *testing.T) {
 	}
 }
 
+func TestUploadValidationFailurePersistsAndReturnsReason(t *testing.T) {
+	reason := formats.ReasonArchivePathTraversal
+	validator := validatorFunc(func(_ context.Context, _ string, _ string) (formats.Result, error) {
+		return formats.Result{
+			ErrorCode:   formats.ErrorCodeInvalidFile,
+			ErrorReason: reason,
+		}, &formats.ValidationError{Reason: reason}
+	})
+	env := newLibraryHTTPEnv(t, validator, allowAllMiddleware, allowAllMiddleware)
+	intent := env.createIntent("evil.epub", 4)
+
+	content := env.request(http.MethodPut, "/api/v1/uploads/"+intent.UploadID+"/content", []byte("data"), "application/octet-stream")
+	if content.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("上传 status = %d，body=%s", content.Code, content.Body.String())
+	}
+	envelope := decodeLibraryError(t, content)
+	if envelope.Error.Code != "invalid_file" || envelope.Error.Details["reason"] != reason {
+		t.Fatalf("错误包络 = %+v", envelope)
+	}
+
+	stored, err := env.store.GetUploadIntent(context.Background(), intent.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ErrorReason == nil || *stored.ErrorReason != reason {
+		t.Fatalf("落库 ErrorReason = %v，期望 %q", stored.ErrorReason, reason)
+	}
+
+	get := env.request(http.MethodGet, "/api/v1/uploads/"+intent.UploadID, nil, "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET 上传 status = %d", get.Code)
+	}
+	dto := decodeLibraryData[uploadDTO](t, get)
+	if dto.State != library.StateFailed || dto.Error == nil || dto.Error.Reason != reason {
+		t.Fatalf("GET 上传 DTO = %+v", dto)
+	}
+}
+
 func TestUploadHTTPErrors(t *testing.T) {
 	env := newLibraryHTTPEnv(t, readableTestValidator(), allowAllMiddleware, allowAllMiddleware)
 
