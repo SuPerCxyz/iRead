@@ -139,10 +139,18 @@ func (h *ReaderDataHandlers) handleBookReaderSettings(w http.ResponseWriter, r *
 	}
 	switch r.Method {
 	case http.MethodGet:
-		h.getBookReaderSettings(w, r, bookID)
+		profile, ok := readerProfileFromRequest(w, r)
+		if !ok {
+			return
+		}
+		h.getBookReaderSettings(w, r, bookID, profile)
 	case http.MethodPut:
+		profile, ok := readerProfileFromRequest(w, r)
+		if !ok {
+			return
+		}
 		h.mutation(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h.putBookReaderSettings(w, r, bookID)
+			h.putBookReaderSettings(w, r, bookID, profile)
 		})).ServeHTTP(w, r)
 	default:
 		w.Header().Set("Allow", "GET, PUT")
@@ -150,7 +158,27 @@ func (h *ReaderDataHandlers) handleBookReaderSettings(w http.ResponseWriter, r *
 	}
 }
 
-func (h *ReaderDataHandlers) getBookReaderSettings(w http.ResponseWriter, r *http.Request, bookID string) {
+// readerProfileFromRequest 解析 ?profile=web|mobile；缺省按 web，兼容旧客户端。
+func readerProfileFromRequest(w http.ResponseWriter, r *http.Request) (readersettings.Profile, bool) {
+	values, present := r.URL.Query()["profile"]
+	if !present {
+		return readersettings.DefaultProfile, true
+	}
+	if len(values) == 1 {
+		if profile, ok := readersettings.ParseProfile(values[0]); ok {
+			return profile, true
+		}
+	}
+	details := map[string]any{"field": "profile"}
+	if len(values) == 1 {
+		details["profile"] = values[0]
+	}
+	writeReaderError(w, r, http.StatusUnprocessableEntity, "invalid_request",
+		"profile 仅支持 web 或 mobile", details)
+	return "", false
+}
+
+func (h *ReaderDataHandlers) getBookReaderSettings(w http.ResponseWriter, r *http.Request, bookID string, profile readersettings.Profile) {
 	book, err := h.resolveBook(r.Context(), bookID)
 	if errors.Is(err, store.ErrBookNotFound) {
 		writeReaderError(w, r, http.StatusNotFound, "not_found", "书籍不存在", nil)
@@ -174,7 +202,7 @@ func (h *ReaderDataHandlers) getBookReaderSettings(w http.ResponseWriter, r *htt
 		h.internalError(w, r, "读取全局阅读设置失败", err)
 		return
 	}
-	dto, err := readersettings.BookDTOFrom(bookID, book.FileVersion, bookOverridesRecord(overrides), global)
+	dto, err := readersettings.BookDTOFrom(bookID, book.FileVersion, bookOverridesRecord(overrides), global, profile)
 	if err != nil {
 		h.internalError(w, r, "解析单书阅读设置失败", err)
 		return
@@ -182,7 +210,7 @@ func (h *ReaderDataHandlers) getBookReaderSettings(w http.ResponseWriter, r *htt
 	writeReaderData(w, http.StatusOK, dto)
 }
 
-func (h *ReaderDataHandlers) putBookReaderSettings(w http.ResponseWriter, r *http.Request, bookID string) {
+func (h *ReaderDataHandlers) putBookReaderSettings(w http.ResponseWriter, r *http.Request, bookID string, profile readersettings.Profile) {
 	body, ok := readReaderJSON(w, r)
 	if !ok {
 		return
@@ -250,6 +278,7 @@ func (h *ReaderDataHandlers) putBookReaderSettings(w http.ResponseWriter, r *htt
 		BookID:        bookID,
 		SchemaVersion: readersettings.SchemaVersion,
 		BaseRevision:  baseRevision,
+		Profile:       profile,
 		Overrides:     request.Overrides,
 	})
 	if err != nil {
@@ -258,7 +287,7 @@ func (h *ReaderDataHandlers) putBookReaderSettings(w http.ResponseWriter, r *htt
 			global, globalErr := h.store.GetReaderSettings(r.Context())
 			var current any
 			if globalErr == nil {
-				if dto, dtoErr := readersettings.BookDTOFrom(bookID, book.FileVersion, bookOverridesRecord(conflict.Current), global); dtoErr == nil {
+				if dto, dtoErr := readersettings.BookDTOFrom(bookID, book.FileVersion, bookOverridesRecord(conflict.Current), global, profile); dtoErr == nil {
 					current = dto
 				}
 			}
@@ -286,7 +315,7 @@ func (h *ReaderDataHandlers) putBookReaderSettings(w http.ResponseWriter, r *htt
 		h.internalError(w, r, "读取全局阅读设置失败", err)
 		return
 	}
-	dto, err := readersettings.BookDTOFrom(bookID, book.FileVersion, bookOverridesRecord(overrides), global)
+	dto, err := readersettings.BookDTOFrom(bookID, book.FileVersion, bookOverridesRecord(overrides), global, profile)
 	if err != nil {
 		h.internalError(w, r, "解析单书阅读设置结果失败", err)
 		return

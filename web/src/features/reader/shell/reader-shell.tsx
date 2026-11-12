@@ -29,9 +29,11 @@ import type {
   PdfOutlineEntry,
   PdfViewSettings,
 } from "../pdf"
+import { DEFAULT_PDF_VIEW } from "../pdf/model"
 import {
   locatorPage,
   pageForProgressPercent,
+  type PdfViewState,
   type ReaderLocation,
   type ReaderTocItem,
 } from "../types"
@@ -74,8 +76,14 @@ import {
 import { ReaderPanelFrame } from "./reader-panel"
 import { ReaderPdfSearchPanel } from "./pdf-search-panel"
 import {
+  legacyPdfViewPatch,
+  pdfDraftFields,
+  pdfExplicitPatchFromRecord,
+  pdfSettingsPatchForApply,
   pdfSettingsPatchKey,
-  pdfViewPatchFromSettings,
+  resolveInitialPdfView,
+  resolveProfilePdfView,
+  resolveResetPdfView,
 } from "./pdf-settings"
 import { ReaderSurface, type ReaderChapterFailure } from "./reader-surface"
 import {
@@ -100,6 +108,7 @@ import {
 } from "./reader-api"
 import { useReaderProgress } from "./use-reader-progress"
 import { useReaderSettingsDraft } from "./use-reader-settings-draft"
+import { useReaderProfile } from "../settings/reader-profile"
 import { readerQueryKeys } from "./query-keys"
 
 interface ReaderShellProps {
@@ -127,6 +136,7 @@ function progressPositionLabel(location: ReaderLocation | null): string {
 export function ReaderShell({ bookId }: ReaderShellProps) {
   const { goBack, label: exitLabel } = useReturnNavigation()
   const isMobile = useIsMobile()
+  const readerProfile = useReaderProfile()
   const appearance = useAppearance()
   const [shell, dispatch] = useReducer(
     readerShellReducer,
@@ -141,6 +151,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
   const [exitMessage, setExitMessage] = useState<string | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
   const [engineReady, setEngineReady] = useState(false)
+  const [settingsBootstrapKey, setSettingsBootstrapKey] = useState<string | null>(null)
   const [pdfDocumentInfo, setPdfDocumentInfo] = useState<{ engine: ReaderEngine; bookId: string; fileVersion: string; pageCount: number } | null>(null)
   const [engineError, setEngineError] = useState<{
     message: string
@@ -155,6 +166,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
     () => readerSurfaceColors(),
   )
   const [pdfView, setPdfView] = useState<PdfViewSettings | null>(null)
+  const [readerZoom, setReaderZoom] = useState(1)
   const [pdfOutline, setPdfOutline] = useState<PdfOutlineEntry[] | null>(null)
   const [pdfOutlineError, setPdfOutlineError] = useState<string | null>(null)
   const [canFullscreen] = useState(
@@ -175,8 +187,16 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
   const exitStartedRef = useRef(false)
   const lastRestoredRef = useRef<string | null>(null)
   const lastViewportRef = useRef("")
+  const lastAppliedProfileRef = useRef(readerProfile)
+  const readerProfileRef = useRef(readerProfile)
+  const pdfMigrationRef = useRef("")
+  const legacyProgressViewRef = useRef<PdfViewState | null | undefined>(undefined)
+  const viewportAnchorLocationRef = useRef<ReaderLocation | null>(null)
+  const initialPdfViewRef = useRef(DEFAULT_PDF_VIEW)
+  const settingsDraftValuesRef = useRef<Record<string, unknown>>({})
   const appliedSettingsKeyRef = useRef("")
   const appliedPdfSettingsKeyRef = useRef("")
+  const pinchActiveRef = useRef(false)
   const appliedComicSettingsKeyRef = useRef("")
   const epubSettingsRef = useRef<Partial<EpubReaderSettings>>({})
   const comicSettingsRef = useRef<ComicReaderSettings | null>(null)
@@ -256,15 +276,22 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
     queryKey: readerQueryKeys.bookOverrides(
       bookId,
       activeFileVersion ?? "pending",
+      readerProfile,
     ),
-    queryFn: ({ signal }) => fetchBookReaderOverrides(bookId, signal),
+    queryFn: ({ signal }) =>
+      fetchBookReaderOverrides(bookId, readerProfile, signal),
     retry: false,
     enabled: activeFileVersion !== null && readerSettingsEnabled,
   })
+  const settingsDraft = useReaderSettingsDraft(
+    bookId,
+    activeFileVersion,
+    settingsQuery.data,
+    readerProfile,
+  )
+  const settingsDraftValues = settingsDraft.values
   const settingsPending =
     readerSettingsEnabled && settingsQuery.isPending
-  const settingsDraft = useReaderSettingsDraft(bookId, activeFileVersion, settingsQuery.data)
-  const settingsDraftValues = settingsDraft.values
 
   const bookmarksQuery = useInfiniteQuery({
     queryKey: readerQueryKeys.bookmarks(bookId, activeFileVersion ?? "pending"),
@@ -370,6 +397,15 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
   const currentDocumentInfo = engineReady && pdfDocumentInfo?.engine === engine ? pdfDocumentInfo : null
   const pageCount = readerPageCount(manifest, currentDocumentInfo)
   const canNavigate = engineReady && (engine?.capabilities.canNavigate ?? false) && (format !== "pdf" || (currentDocumentInfo !== null && pageCount !== null))
+  const navigationUnavailableReason =
+    !engineReady || canNavigate
+      ? null
+      : engine?.capabilities.unavailableReason.trim() ||
+        (format === "pdf" ? "页数尚未就绪" : "翻页暂不可用")
+  // 加载中先使用与引擎一致的默认视图，让 PDF 控件组提前占位；
+  // 控件在 engineReady 之前保持 disabled，ready 后结构不跳变。
+  const effectivePdfView =
+    format === "pdf" ? (pdfView ?? DEFAULT_PDF_VIEW) : pdfView
 
   const progressLoading = manifest !== null && progressPending
   const staleProgress = progressStale
@@ -405,11 +441,15 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
   const epubSettingsKey = JSON.stringify(epubSettings)
   const pdfSettings = useMemo(
     () =>
-      pdfViewPatchFromSettings(
-        settingsDraft.effectiveValues,
-        settingsDraftValues,
-      ),
-    [settingsDraftValues, settingsDraft.effectiveValues],
+      settingsDraft.reset
+        ? { ...resolveResetPdfView(settingsDraft.globalValue) }
+        : pdfSettingsPatchForApply(settingsQuery.data, settingsDraftValues),
+    [
+      settingsDraft.globalValue,
+      settingsDraft.reset,
+      settingsDraftValues,
+      settingsQuery.data,
+    ],
   )
   const pdfSettingsKey = pdfSettingsPatchKey(pdfSettings)
   const comicSettings = useMemo(
@@ -444,8 +484,71 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
 
   const metrics = useReaderViewport(stageRef)
 
+  const progressPdfView = useMemo<PdfViewState | null>(
+    () =>
+      progressLocation !== null &&
+      progressLocation.locatorType === "pdf-page"
+        ? progressLocation.locatorPayload.view
+        : null,
+    [progressLocation],
+  )
+  const initialPdfView = useMemo(
+    () =>
+      resolveInitialPdfView({
+        record: settingsQuery.data,
+        legacyView: progressPdfView,
+      }),
+    [progressPdfView, settingsQuery.data],
+  )
+  const settingsBootstrapScope = `${bookId}:${activeFileVersion ?? ""}:${format ?? ""}`
+  // 同一本书/文件版本只等待一次设置；profile 切换保持 ready，不重开引擎。
+  const initialSettingsReady = readerSettingsEnabled
+    ? settingsBootstrapKey === settingsBootstrapScope
+    : manifest !== null
+
   useEffect(() => {
-    if (engine === null || manifest === null || settingsPending) {
+    initialPdfViewRef.current = initialPdfView
+  }, [initialPdfView])
+
+  useEffect(() => {
+    settingsDraftValuesRef.current = settingsDraftValues
+  }, [settingsDraftValues])
+
+  useEffect(() => {
+    readerProfileRef.current = readerProfile
+  }, [readerProfile])
+
+  useEffect(() => {
+    if (
+      legacyProgressViewRef.current === undefined &&
+      progressPdfView !== null
+    ) {
+      legacyProgressViewRef.current = progressPdfView
+    }
+  }, [progressPdfView])
+
+  useEffect(() => {
+    if (!readerSettingsEnabled) {
+      return
+    }
+    if (!settingsQuery.isSuccess && !settingsQuery.isError) {
+      return
+    }
+    // 等待设置接口首次返回后才允许挂载引擎；scope 标记避免 profile 切换重复触发。
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 首次设置就绪
+    setSettingsBootstrapKey(settingsBootstrapScope)
+  }, [
+    readerSettingsEnabled,
+    settingsBootstrapScope,
+    settingsQuery.isError,
+    settingsQuery.isSuccess,
+  ])
+
+  useEffect(() => {
+    if (engine === null || manifest === null) {
+      return
+    }
+    if (!initialSettingsReady || progressLoading) {
       return
     }
     const host =
@@ -468,8 +571,13 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
     setPdfOutline(null)
     setPdfOutlineError(null)
     lastRestoredRef.current = null
+    lastViewportRef.current = ""
+    lastAppliedProfileRef.current = readerProfileRef.current
+    pdfMigrationRef.current = ""
     appliedSettingsKeyRef.current = ""
     appliedPdfSettingsKeyRef.current = ""
+    pinchActiveRef.current = false
+    setReaderZoom(1)
     appliedComicSettingsKeyRef.current = ""
     persistableRef.current = false
     latestLocationRef.current = null
@@ -490,7 +598,13 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
         if (!active || controller.signal.aborted) {
           return
         }
-        await engine.mount(host, manifest, controller.signal)
+        const pdfInitialView =
+          manifest.format === "pdf"
+            ? initialPdfViewRef.current
+            : undefined
+        await engine.mount(host, manifest, controller.signal, {
+          initialView: pdfInitialView,
+        })
       })
       .then(() => {
         if (!active || controller.signal.aborted) {
@@ -527,7 +641,13 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
       controller.abort()
       engine.unmount()
     }
-  }, [engine, engineMountNonce, manifest, settingsPending])
+  }, [
+    engine,
+    engineMountNonce,
+    initialSettingsReady,
+    manifest,
+    progressLoading,
+  ])
 
   useEffect(() => {
     const token = ++engineLifecycleRef.current
@@ -599,8 +719,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
           current.zoomMode === nextView.zoomMode &&
           current.manualScale === nextView.manualScale &&
           current.gap === nextView.gap &&
-          current.background === nextView.background &&
-          current.toolbarVisible === nextView.toolbarVisible
+          current.background === nextView.background
             ? current
             : nextView,
         )
@@ -804,6 +923,11 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
     if (engine === null || progressLoading || !engineReady) {
       return
     }
+    if (initialRestoreDone) {
+      // 初始恢复只做一次；后续进度查询失效/滚动保存不得再调用 restore，
+      // 否则会用刚保存的 page/offset 覆盖用户正在滚动的位置。
+      return
+    }
     if (progressLocation === null) {
       return
     }
@@ -817,8 +941,21 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
       return
     }
     lastRestoredRef.current = key
+    const restoreTarget: ReaderLocation =
+      isPdfReaderEngine(engine) &&
+      progressLocation.locatorType === "pdf-page"
+        ? {
+            ...progressLocation,
+            locatorPayload: {
+              ...progressLocation.locatorPayload,
+              // 视图已由 profile 初始视图决定；旧进度中的 fit-width
+              // 不能再次覆盖首帧和恢复后的缩放。
+              view: null,
+            },
+          }
+        : progressLocation
     void engine
-      .restore(progressLocation)
+      .restore(restoreTarget)
       .then((result) => {
         if (!result.ok) {
           setNotice(result.reason)
@@ -850,10 +987,134 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
   }, [
     engine,
     engineReady,
+    initialRestoreDone,
     progressLoading,
     progressLocation,
     rememberLatestLocation,
   ])
+
+  useEffect(() => {
+    if (!engineReady || !isPdfReaderEngine(engine)) {
+      return
+    }
+    if (!initialSettingsReady || settingsQuery.isPending || settingsQuery.isError) {
+      return
+    }
+    if (progressLocation !== null && !initialRestoreDone) {
+      return
+    }
+    if (lastAppliedProfileRef.current === readerProfile) {
+      return
+    }
+    lastAppliedProfileRef.current = readerProfile
+    const nextView = resolveProfilePdfView(settingsQuery.data)
+    const anchor = viewportAnchorLocationRef.current
+    viewportAnchorLocationRef.current = null
+    let active = true
+    void engine
+      .setView(nextView)
+      .then(async () => {
+        if (!active) {
+          return
+        }
+        setPdfView(engine.getView())
+        const current = engine.getLocation()
+        if (
+          anchor !== null &&
+          anchor.locatorType === "pdf-page" &&
+          current !== null &&
+          current.locatorType === "pdf-page" &&
+          current.locatorPayload.page !== anchor.locatorPayload.page
+        ) {
+          // resize 的 rAF 与 profile setView 交错时，锚点可能按新布局
+          // 误读旧 scrollLeft。这里用 resize 前的位置显式校正一次。
+          await engine.navigateTo({
+            ...anchor,
+            locatorPayload: {
+              ...anchor.locatorPayload,
+              view: null,
+            },
+          })
+          if (active) {
+            setPdfView(engine.getView())
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setNotice(
+            error instanceof Error && error.message.length > 0
+              ? `无法切换 ${readerProfile} 阅读样式：${error.message}`
+              : `无法切换 ${readerProfile} 阅读样式。`,
+          )
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [
+    engine,
+    engineReady,
+    initialRestoreDone,
+    initialSettingsReady,
+    progressLocation,
+    readerProfile,
+    settingsQuery.data,
+    settingsQuery.isError,
+    settingsQuery.isPending,
+  ])
+
+  useEffect(() => {
+    if (!engineReady || !isPdfReaderEngine(engine)) {
+      return
+    }
+    if (!initialRestoreDone || settingsDraft.reset) {
+      return
+    }
+    const legacyView = legacyProgressViewRef.current
+    const legacyPatch = legacyPdfViewPatch(legacyView)
+    if (
+      legacyPatch.zoomMode !== "manual" &&
+      legacyPatch.zoomMode !== "fit-page"
+    ) {
+      return
+    }
+    const key = `${bookId}:${activeFileVersion ?? ""}:${readerProfile}`
+    if (pdfMigrationRef.current === key) {
+      return
+    }
+    const explicit = pdfExplicitPatchFromRecord(settingsQuery.data)
+    if (explicit.zoomMode !== undefined) {
+      // 当前 profile 已经显式选择缩放：不迁移旧进度。
+      pdfMigrationRef.current = key
+      return
+    }
+    pdfMigrationRef.current = key
+    const next = { ...settingsDraftValuesRef.current }
+    next["pdf.zoomMode"] = legacyPatch.zoomMode
+    if (legacyPatch.manualScale !== undefined) {
+      next["pdf.manualScale"] = legacyPatch.manualScale
+    }
+    if (
+      legacyPatch.layoutMode !== undefined &&
+      explicit.layoutMode === undefined
+    ) {
+      next["pdf.layoutMode"] = legacyPatch.layoutMode
+    }
+    // 不阻塞首屏：首帧已用旧进度视图；这里只把一次性迁移交给现有
+    // 350ms 自动保存队列，失败时仍保留本机草稿。
+    settingsDraft.change(next)
+  }, [
+    activeFileVersion,
+    bookId,
+    engine,
+    engineReady,
+    initialRestoreDone,
+    readerProfile,
+    settingsDraft,
+    settingsQuery.data,
+  ])
+
 
   useEffect(() => {
     if (engine === null || manifest === null || !engineReady) {
@@ -918,21 +1179,20 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
       return
     }
     lastViewportRef.current = key
-    engine.handleViewportChange(metrics)
-    if (
-      isPdfReaderEngine(engine) &&
-      location !== null &&
-      engine.capabilities.canRender &&
-      lastRestoredRef.current !== null
-    ) {
-      void engine.restore(location)
+    if (isPdfReaderEngine(engine)) {
+      // 记录尺寸变化前的可靠位置；profile 切换可能在 resize 之后才生效，
+      // 用它在应用新视图后核对/恢复当前页。
+      const anchor = engine.getLocation()
+      if (anchor !== null) {
+        viewportAnchorLocationRef.current = anchor
+      }
     }
+    engine.handleViewportChange(metrics)
   }, [
     engine,
     engineReady,
     initialRestoreDone,
     metrics,
-    location,
     progressLocation,
   ])
 
@@ -969,6 +1229,12 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
       try {
         await engine.setView(patch)
         setPdfView(engine.getView())
+        // 只有用户显式操作（工具栏/设置项/捏合）才写当前 profile；
+        // 滚动、翻页、预取和尺寸变化不经过这里。
+        settingsDraft.change({
+          ...settingsDraftValuesRef.current,
+          ...pdfDraftFields(patch),
+        })
       } catch (error) {
         setNotice(
           error instanceof Error && error.message.length > 0
@@ -977,7 +1243,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
         )
       }
     },
-    [engine],
+    [engine, settingsDraft],
   )
 
   const stepPdfZoom = useCallback(
@@ -995,6 +1261,113 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
       void updatePdfView({ zoomMode: "manual", manualScale: next })
     },
     [pdfView, updatePdfView],
+  )
+
+  const stepReaderZoom = useCallback(
+    (factor: number) => {
+      if (engine === null) {
+        return
+      }
+      if (isPdfReaderEngine(engine)) {
+        stepPdfZoom(factor)
+        return
+      }
+      if (
+        engine.beginPinch === undefined ||
+        engine.updatePinch === undefined ||
+        engine.endPinch === undefined
+      ) {
+        return
+      }
+      const rect = stageRef.current?.getBoundingClientRect()
+      const x = rect === undefined ? window.innerWidth / 2 : rect.left + rect.width / 2
+      const y = rect === undefined ? window.innerHeight / 2 : rect.top + rect.height / 2
+      engine.beginPinch(x, y)
+      engine.updatePinch(factor, x, y)
+      engine.endPinch(true)
+      const next = engine.getZoom?.()
+      if (typeof next === "number") {
+        setReaderZoom(next)
+      }
+    },
+    [engine, stepPdfZoom],
+  )
+
+  const resetReaderZoom = useCallback(() => {
+    if (engine === null) {
+      return
+    }
+    if (isPdfReaderEngine(engine)) {
+      void updatePdfView({ zoomMode: "manual", manualScale: 1 })
+      setReaderZoom(1)
+      return
+    }
+    engine.resetZoom?.()
+    const next = engine.getZoom?.()
+    if (typeof next === "number") {
+      setReaderZoom(next)
+    }
+  }, [engine, updatePdfView])
+
+  const handlePinchStart = useCallback(
+    (center: { x: number; y: number }) => {
+      if (engine === null || engine.beginPinch === undefined) {
+        return
+      }
+      pinchActiveRef.current = true
+      engine.beginPinch(center.x, center.y)
+      const next = engine.getZoom?.()
+      if (typeof next === "number") {
+        setReaderZoom(next)
+      }
+    },
+    [engine],
+  )
+
+  const handlePinchMove = useCallback(
+    (scale: number, center: { x: number; y: number }) => {
+      if (
+        !pinchActiveRef.current ||
+        engine === null ||
+        engine.updatePinch === undefined
+      ) {
+        return
+      }
+      engine.updatePinch(scale, center.x, center.y)
+      const next = engine.getZoom?.()
+      if (typeof next === "number") {
+        setReaderZoom(next)
+      }
+    },
+    [engine],
+  )
+
+  const handlePinchEnd = useCallback(
+    (commit: boolean) => {
+      if (!pinchActiveRef.current || engine === null) {
+        return
+      }
+      pinchActiveRef.current = false
+      engine.endPinch?.(commit)
+      const next = engine.getZoom?.()
+      if (typeof next === "number") {
+        setReaderZoom(next)
+      }
+      if (isPdfReaderEngine(engine)) {
+        const view = engine.getView()
+        setPdfView(view)
+        if (commit) {
+          settingsDraft.change({
+            ...settingsDraftValuesRef.current,
+            ...pdfDraftFields({
+              zoomMode: view.zoomMode,
+              manualScale: view.manualScale,
+            }),
+          })
+        }
+      }
+    },
+    [engine, settingsDraft],
   )
 
   const cyclePdfLayout = useCallback(() => {
@@ -1292,6 +1665,9 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
       if (choice === "use-server" && result.location !== null) {
         setSessionLocation(result.location)
         rememberLatestLocation(result.location)
+        // 采用服务器位置是显式导航；初始恢复已完成后不再依赖进度
+        // effect 重放，否则会与用户滚动/翻页竞态。
+        await navigateTo(result.location)
         setNotice("已采用服务器阅读进度。")
         return
       }
@@ -1301,7 +1677,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
           : "已保留本机阅读进度并重新同步。",
       )
     },
-    [rememberLatestLocation, resolveProgressConflict],
+    [navigateTo, rememberLatestLocation, resolveProgressConflict],
   )
 
   const gestures = useReaderGestures({
@@ -1314,12 +1690,54 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
         stageRef.current?.focus({ preventScroll: true })
       })
     },
+    onPinchStart: handlePinchStart,
+    onPinchMove: handlePinchMove,
+    onPinchEnd: () => handlePinchEnd(true),
+    onPinchCancel: () => handlePinchEnd(false),
   })
+
+  useEffect(() => {
+    const stage = stageRef.current
+    if (stage === null) {
+      return
+    }
+    const suppressMultiTouch = (event: TouchEvent) => {
+      if (event.touches.length > 1) {
+        event.preventDefault()
+      }
+    }
+    const suppressGesture = (event: Event) => {
+      event.preventDefault()
+    }
+    stage.addEventListener("touchmove", suppressMultiTouch, { passive: false })
+    stage.addEventListener("gesturestart", suppressGesture)
+    stage.addEventListener("gesturechange", suppressGesture)
+    return () => {
+      stage.removeEventListener("touchmove", suppressMultiTouch)
+      stage.removeEventListener("gesturestart", suppressGesture)
+      stage.removeEventListener("gesturechange", suppressGesture)
+    }
+  }, [])
 
   const onContentInput = gestures.onContentInput
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) {
+        return
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "f" &&
+        manifest?.format === "pdf" &&
+        manifest.readingCapabilities.canRead &&
+        (engine?.capabilities.canSearch ?? false)
+      ) {
+        // PDF 可搜索时由 Shell 接管浏览器查找，打开自己的搜索面板。
+        event.preventDefault()
+        dispatch({ type: "show-toolbars" })
+        dispatch({ type: "close-panel" })
+        setSearchOpen(true)
         return
       }
       if (event.ctrlKey || event.metaKey || event.altKey || (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight"))) {
@@ -1507,8 +1925,10 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
           ref={stageRef}
           tabIndex={-1}
           onPointerDown={gestures.onPointerDown}
+          onPointerMove={gestures.onPointerMove}
           onPointerUp={gestures.onPointerUp}
           onPointerCancel={gestures.onPointerCancel}
+          onClickCapture={gestures.onClickCapture}
         >
           <div
             className="iread-reader-shell__surface"
@@ -1568,17 +1988,41 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
 
         <ReaderBottomToolbar
           visible={shell.toolbars === "visible"}
+          mobile={isMobile}
           format={format}
           location={location}
           pageCount={pageCount}
           canNavigate={canNavigate}
+          engineReady={engineReady}
+          navigationUnavailableReason={navigationUnavailableReason}
           onPreviousPage={() => requestPage("previous")}
           onNextPage={() => requestPage("next")}
           onSeekPercent={seekPercent}
           onJumpToPage={jumpToPage}
-          pdfView={pdfView}
+          pdfView={effectivePdfView}
           onPdfZoomIn={() => stepPdfZoom(1.15)}
           onPdfZoomOut={() => stepPdfZoom(1 / 1.15)}
+          zoomLabel={
+            effectivePdfView === null
+              ? `${Math.round(readerZoom * 100)}%`
+              : effectivePdfView.zoomMode === "manual"
+                ? `${Math.round(effectivePdfView.manualScale * 100)}%`
+                : "自动"
+          }
+          zoomAvailable={
+            format === "pdf" ||
+            format === "cbz" ||
+            format === "cbr" ||
+            (format === "epub" &&
+              (epubSettings.pagination ?? "pagination") === "pagination")
+          }
+          onZoomIn={() =>
+            format === "pdf" ? stepPdfZoom(1.15) : stepReaderZoom(1.25)
+          }
+          onZoomOut={() =>
+            format === "pdf" ? stepPdfZoom(1 / 1.15) : stepReaderZoom(0.8)
+          }
+          onResetZoom={resetReaderZoom}
           onPdfFitWidth={() => {
             void updatePdfView({ zoomMode: "fit-width" })
           }}
@@ -1587,6 +2031,9 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
           }}
           onPdfRotate={rotatePdf}
           onPdfCycleLayout={cyclePdfLayout}
+          onPdfSetLayout={(layout) => {
+            void updatePdfView({ layoutMode: layout })
+          }}
         />
 
         <ReaderPanelFrame
@@ -1656,6 +2103,7 @@ export function ReaderShell({ bookId }: ReaderShellProps) {
             bookId={bookId}
             fileVersion={activeFileVersion}
             format={manifest?.format ?? format}
+            profile={readerProfile}
             enabled={manifest !== null}
             pending={settingsDraftValues}
             onPendingChange={settingsDraft.change}

@@ -1,3 +1,5 @@
+import type { ReaderProfile } from "../types"
+
 export const readerQueryKeys = {
   root: ["reader"] as const,
   book: (bookId: string) => ["reader", "book", bookId] as const,
@@ -8,6 +10,9 @@ export const readerQueryKeys = {
   bookmarks: (bookId: string, fileVersion: string) =>
     ["reader", "bookmarks", bookId, fileVersion] as const,
   globalSettings: () => ["reader", "settings", "reader"] as const,
-  bookOverrides: (bookId: string, fileVersion: string) =>
-    ["reader", "overrides", bookId, fileVersion] as const,
+  bookOverrides: (
+    bookId: string,
+    fileVersion: string,
+    profile: ReaderProfile,
+  ) => ["reader", "overrides", bookId, fileVersion, profile] as const,
 }

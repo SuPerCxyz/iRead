@@ -299,10 +299,10 @@ async function main() {
       .locator('[data-reader-format="pdf"]')
       .waitFor({ state: "visible" })
     const pdfLabels = await fieldLabels("pdf")
-    assert.equal(pdfLabels.length, 6)
+    assert.equal(pdfLabels.length, 5)
     assert.deepEqual(
       [...pdfLabels].sort(),
-      ["页面布局", "缩放模式", "手动缩放", "页距", "显示 PDF 工具栏", "纸张外背景"].sort(),
+      ["页面布局", "缩放模式", "手动缩放", "页距", "纸张外背景"].sort(),
     )
     assert.ok(!pdfLabels.includes("字号"), "PDF 不应出现文字字段")
     assert.ok(!pdfLabels.includes("行高"), "PDF 不应出现文字字段")
@@ -577,7 +577,7 @@ async function main() {
     await mobile
       .locator('[data-reader-format="pdf"]')
       .waitFor({ state: "visible" })
-    assert.equal(await fieldLabelsMobile(mobile, "pdf"), 6)
+    assert.equal(await fieldLabelsMobile(mobile, "pdf"), 5)
     await formatSelect.click()
     await mobile.getByRole("option", { name: "漫画", exact: true }).click()
     await mobile

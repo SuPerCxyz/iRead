@@ -51,7 +51,6 @@ const EXPECTED_FIELDS = {
     "manualScale",
     "gap",
     "background",
-    "toolbarVisible",
   ],
   comic: ["direction", "mode", "fit", "gap", "background"],
 } as const
@@ -215,7 +214,7 @@ describe("全局默认来源与草稿", () => {
     expect(
       validateGlobalDraft({
         reflow: { fontSize: 18, lineHeight: 1.8, text: "#112233" },
-        pdf: { manualScale: 1.5, toolbarVisible: false },
+        pdf: { manualScale: 1.5 },
         comic: { direction: "rtl", gap: "compact" },
       }),
     ).toEqual({})

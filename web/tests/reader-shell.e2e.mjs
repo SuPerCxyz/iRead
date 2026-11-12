@@ -675,6 +675,9 @@ async function main() {
       `第 ${CURRENT_CHAPTER} 章`,
       { timeout: 10000 },
     )
+    // 章节跳转后焦点可能留在正文 iframe；先确认焦点进入面板再测 Esc，
+    // 避免把“焦点在跨 realm 正文”误当成面板关闭失败。
+    await tocPanel.getByRole("tab", { name: "目录" }).focus()
     await desktop.keyboard.press("Escape")
     await tocPanel.waitFor({ state: "hidden" })
 
@@ -810,31 +813,54 @@ async function main() {
       path: path.join(SCREENSHOT_DIR, "desktop-settings.png"),
     })
 
+    const readBookOverrides = async () => {
+      const result = await adminApi.get(
+        `/api/v1/books/${bookId}/reader-overrides`,
+      )
+      assert.equal(result.status, 200)
+      return result.payload.data
+    }
+
+    // 当前已确认行为：本书更改自动保存；“立即保存本书”可显式 flush。
+    const beforeAutosave = await readBookOverrides()
     await desktop.getByLabel("翻页动画").click()
     await desktop.getByRole("option", { name: "无" }).click()
-    await desktop.getByText("有未保存的更改。", { exact: true }).waitFor()
-    await desktop.getByRole("button", { name: "保存到本书" }).click()
-    await desktop.getByText("已保存到本书。", { exact: true }).waitFor()
-    let overridesAfterSave = await adminApi.get(
-      `/api/v1/books/${bookId}/reader-overrides`,
-    )
-    assert.equal(overridesAfterSave.payload?.data?.revision, "2")
+    await settingsPanel
+      .locator('[data-reader-autosave="saved"]')
+      .waitFor({ timeout: 10000 })
+    const overridesAfterAutosave = await readBookOverrides()
     assert.equal(
-      sourceFor(overridesAfterSave.payload.data, "reflow", "animation"),
+      Number(overridesAfterAutosave.revision),
+      Number(beforeAutosave.revision) + 1,
+    )
+    assert.equal(
+      sourceFor(overridesAfterAutosave, "reflow", "animation"),
       "book",
     )
+    assert.equal(overridesAfterAutosave.overrides.reflow.animation, "none")
     assert.equal(
-      overridesAfterSave.payload.data.overrides.reflow.animation,
-      "none",
-    )
-    assert.equal(
-      overridesAfterSave.payload.data.overrides.reflow.publisherCSSMode,
+      overridesAfterAutosave.overrides.reflow.publisherCSSMode,
       "publisher",
-      "保存到本书不得删除未修改的其他覆盖字段",
+      "自动保存不得删除未修改的其他覆盖字段",
     )
+    await bookAnimationRow.getByText("本书覆盖", { exact: true }).waitFor()
 
     await desktop.getByLabel("翻页动画").click()
     await desktop.getByRole("option", { name: "轻量" }).click()
+    await desktop
+      .getByRole("button", { name: "立即保存本书" })
+      .click()
+    await settingsPanel
+      .locator('[data-status="saved"]')
+      .filter({ hasText: "本书设置已保存。" })
+      .waitFor({ timeout: 10000 })
+    const overridesAfterImmediate = await readBookOverrides()
+    assert.equal(
+      Number(overridesAfterImmediate.revision),
+      Number(overridesAfterAutosave.revision) + 1,
+    )
+    assert.equal(overridesAfterImmediate.overrides.reflow.animation, "light")
+
     await desktop.getByRole("button", { name: "设为全局默认" }).click()
     await desktop
       .getByText("已设为全局默认值；未删除其他书籍的本书覆盖。", {
@@ -848,14 +874,17 @@ async function main() {
     )
     assert.equal(globalAfterSave.payload.data.value.reflow.animation, "light")
     assert.equal(globalAfterSave.payload.data.value.reflow.fontSize, 19)
+    await bookAnimationRow.getByText("本书覆盖", { exact: true }).waitFor()
 
     await desktop.getByRole("button", { name: "恢复本书默认" }).click()
     await desktop.getByText("已恢复本书默认设置。", { exact: true }).waitFor()
-    const overridesAfterReset = await adminApi.get(
-      `/api/v1/books/${bookId}/reader-overrides`,
+    const overridesAfterReset = await readBookOverrides()
+    assert.equal(
+      Number(overridesAfterReset.revision),
+      Number(overridesAfterImmediate.revision) + 1,
     )
-    assert.equal(overridesAfterReset.payload?.data?.revision, "3")
-    assert.deepEqual(overridesAfterReset.payload.data.overrides, {})
+    assert.deepEqual(overridesAfterReset.overrides, {})
+    await bookAnimationRow.getByText("全局", { exact: true }).waitFor()
 
     logStep("桌面：409 设置冲突与载入服务器设置")
     const conflictSeed = await adminApi.put(
@@ -863,21 +892,20 @@ async function main() {
       {
         schemaVersion: 1,
         fileVersion: manifest.fileVersion,
-        baseRevision: "3",
+        baseRevision: overridesAfterReset.revision,
         overrides: { reflow: { animation: "light" } },
       },
     )
     assert.equal(conflictSeed.status, 200)
-    assert.equal(conflictSeed.payload?.data?.revision, "4")
+    assert.equal(
+      Number(conflictSeed.payload?.data?.revision),
+      Number(overridesAfterReset.revision) + 1,
+    )
     await desktop.getByLabel("翻页动画").click()
     await desktop.getByRole("option", { name: "无" }).click()
-    await desktop.getByRole("button", { name: "保存到本书" }).click()
-    await desktop
-      .getByText("设置已在另一处更新", { exact: false })
-      .waitFor()
-    await desktop
-      .getByRole("button", { name: "载入服务器设置" })
-      .waitFor()
+    await settingsPanel
+      .locator('[data-reader-autosave="conflict"]')
+      .waitFor({ timeout: 10000 })
     await desktop
       .getByRole("button", { name: "载入服务器设置" })
       .click()
@@ -891,51 +919,56 @@ async function main() {
 
     await desktop.getByLabel("翻页动画").click()
     await desktop.getByRole("option", { name: "无" }).click()
-    await desktop.getByRole("button", { name: "保存到本书" }).click()
-    await desktop.getByText("已保存到本书。", { exact: true }).waitFor()
-    const overridesAfterRecovery = await adminApi.get(
-      `/api/v1/books/${bookId}/reader-overrides`,
-    )
-    assert.equal(overridesAfterRecovery.payload?.data?.revision, "5")
+    await settingsPanel
+      .locator('[data-reader-autosave="saved"]')
+      .waitFor({ timeout: 10000 })
+    const overridesAfterRecovery = await readBookOverrides()
     assert.equal(
-      overridesAfterRecovery.payload.data.overrides.reflow.animation,
-      "none",
+      Number(overridesAfterRecovery.revision),
+      Number(conflictSeed.payload.data.revision) + 1,
     )
+    assert.equal(overridesAfterRecovery.overrides.reflow.animation, "none")
 
+    const overridesBeforeSecondSeed = await readBookOverrides()
     const secondConflictSeed = await adminApi.put(
       `/api/v1/books/${bookId}/reader-overrides`,
       {
         schemaVersion: 1,
         fileVersion: manifest.fileVersion,
-        baseRevision: "5",
+        baseRevision: overridesBeforeSecondSeed.revision,
         overrides: {
-          reflow: { animation: "light", publisherCSSMode: "publisher" },
+          reflow: { animation: "none", publisherCSSMode: "publisher" },
         },
       },
     )
     assert.equal(secondConflictSeed.status, 200)
-    assert.equal(secondConflictSeed.payload?.data?.revision, "6")
+    assert.equal(
+      Number(secondConflictSeed.payload?.data?.revision),
+      Number(overridesBeforeSecondSeed.revision) + 1,
+    )
     await desktop.getByLabel("翻页动画").click()
     await desktop.getByRole("option", { name: "轻量" }).click()
-    await desktop.getByRole("button", { name: "保存到本书" }).click()
-    await desktop
-      .getByText("设置已在另一处更新", { exact: false })
-      .waitFor()
+    await settingsPanel
+      .locator('[data-reader-autosave="conflict"]')
+      .waitFor({ timeout: 10000 })
     await desktop
       .getByRole("button", { name: "保留本机选择并重新保存" })
       .click()
-    await desktop.getByText("已保存到本书。", { exact: true }).waitFor()
-    const overridesAfterKeepLocal = await adminApi.get(
-      `/api/v1/books/${bookId}/reader-overrides`,
-    )
-    assert.equal(overridesAfterKeepLocal.payload?.data?.revision, "7")
+    await settingsPanel
+      .locator('[data-reader-autosave="saved"]')
+      .waitFor({ timeout: 10000 })
+    const overridesAfterKeepLocal = await readBookOverrides()
     assert.equal(
-      overridesAfterKeepLocal.payload.data.overrides.reflow.animation,
+      Number(overridesAfterKeepLocal.revision),
+      Number(secondConflictSeed.payload.data.revision) + 1,
+    )
+    assert.equal(
+      overridesAfterKeepLocal.overrides.reflow.animation,
       "light",
       "保留本机选择应写入当前待保存字段",
     )
     assert.equal(
-      overridesAfterKeepLocal.payload.data.overrides.reflow.publisherCSSMode,
+      overridesAfterKeepLocal.overrides.reflow.publisherCSSMode,
       "publisher",
       "冲突重试应保留服务器上未修改的其他覆盖字段",
     )
@@ -1298,7 +1331,8 @@ async function main() {
     await mobile
       .locator(".iread-reader-shell__position-text")
       .filter({ hasText: "位置" })
-      .waitFor()
+      // 手机工具栏可自动隐藏；位置文本仍在 DOM 中，不能要求可见。
+      .waitFor({ state: "attached" })
     await mobile.screenshot({
       path: path.join(SCREENSHOT_DIR, "mobile-reader.png"),
     })

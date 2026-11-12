@@ -21,6 +21,7 @@ import {
   type ReaderLocatorPayload,
   type ReaderLocatorType,
   type ReaderManifest,
+  type ReaderProfile,
   type ReaderProgress,
   type ReaderSettingsEnvelope,
 } from "../types"
@@ -274,12 +275,20 @@ export async function putReaderGlobalSettings(
   return parseReaderSettingsEnvelope(data)
 }
 
+function readerOverridesPath(
+  bookId: string,
+  profile: ReaderProfile,
+): string {
+  return `${bookPath(bookId)}/reader-overrides?profile=${encodeURIComponent(profile)}`
+}
+
 export async function fetchBookReaderOverrides(
   bookId: string,
+  profile: ReaderProfile = "web",
   signal?: AbortSignal,
 ): Promise<BookReaderOverrides> {
   const data = await apiGet<unknown>(
-    `${bookPath(bookId)}/reader-overrides`,
+    readerOverridesPath(bookId, profile),
     signal,
   )
   return parseBookReaderOverrides(data)
@@ -291,11 +300,12 @@ export async function putBookReaderOverrides(
     fileVersion: string
     baseRevision: string
     overrides: Record<string, Record<string, unknown>>
+    profile?: ReaderProfile
   },
   signal?: AbortSignal,
 ): Promise<BookReaderOverrides> {
   const data = await apiPut<unknown>(
-    `${bookPath(bookId)}/reader-overrides`,
+    readerOverridesPath(bookId, input.profile ?? "web"),
     {
       schemaVersion: 1,
       fileVersion: input.fileVersion,

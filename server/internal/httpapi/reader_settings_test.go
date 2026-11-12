@@ -109,9 +109,16 @@ func TestReaderBookSettingsInheritanceSparseAndRecovery(t *testing.T) {
 	}
 	bookDTO := decodeData[readersettings.BookDTO](t, defaultBook)
 	if bookDTO.Revision != "0" || bookDTO.UpdatedAt != nil || len(bookDTO.Overrides) != 0 ||
-		bookDTO.GlobalRevision != "0" || bookDTO.BuiltInVersion != 1 ||
-		settingSource(bookDTO, "reflow", "fontSize") != "built-in" {
+		bookDTO.GlobalRevision != "0" || bookDTO.BuiltInVersion != 2 ||
+		bookDTO.Profile != "web" ||
+		settingSource(bookDTO, "reflow", "fontSize") != "built-in" ||
+		settingSource(bookDTO, "pdf", "zoomMode") != "built-in" ||
+		settingSource(bookDTO, "pdf", "manualScale") != "built-in" {
 		t.Fatalf("默认单书设置 = %+v", bookDTO)
+	}
+	pdfDefaults := bookDTO.EffectiveValues["pdf"].(map[string]any)
+	if pdfDefaults["zoomMode"] != "manual" || pdfDefaults["manualScale"] != float64(1) {
+		t.Fatalf("PDF 默认缩放 = %#v", pdfDefaults)
 	}
 	reflow := bookDTO.EffectiveValues["reflow"].(map[string]any)
 	if reflow["fontSize"] != float64(16) {

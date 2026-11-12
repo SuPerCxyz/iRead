@@ -35,16 +35,18 @@ export interface PdfViewSettings {
   manualScale: number
   gap: PdfGapMode
   background: PdfBackgroundMode
-  toolbarVisible: boolean
 }
 
+/**
+ * 新书与内置默认统一为 100% 手动缩放。自动适宽不写入默认值：
+ * 旧版滚动时把 fit-width 写进进度，重开会产生“先适宽再恢复”的抖动。
+ */
 export const DEFAULT_PDF_VIEW: PdfViewSettings = {
   layoutMode: "single",
-  zoomMode: "fit-width",
+  zoomMode: "manual",
   manualScale: PDF_DEFAULT_MANUAL_SCALE,
   gap: "standard",
   background: "inherit",
-  toolbarVisible: true,
 }
 
 export interface PdfAnchor {
@@ -110,10 +112,6 @@ export function normalizeView(value: Partial<PdfViewSettings> | null): PdfViewSe
       value !== null && includes(PDF_BACKGROUND_MODES, value.background)
         ? value.background
         : DEFAULT_PDF_VIEW.background,
-    toolbarVisible:
-      value !== null && typeof value.toolbarVisible === "boolean"
-        ? value.toolbarVisible
-        : DEFAULT_PDF_VIEW.toolbarVisible,
   }
 }
 
@@ -140,9 +138,7 @@ export function viewFromEffectiveSettings(
   if (includes(PDF_BACKGROUND_MODES, direct.background)) {
     result.background = direct.background
   }
-  if (typeof direct.toolbarVisible === "boolean") {
-    result.toolbarVisible = direct.toolbarVisible
-  }
+  // 服务端仍可能返回已废弃的 toolbarVisible；前端不再映射为视图状态。
   return Object.keys(result).length === 0 ? null : result
 }
 
@@ -212,7 +208,6 @@ export function pdfLocation(
   pageOffset: number,
   pageCount: number,
   relative: PdfRelativeViewport | null,
-  view: PdfViewSettings,
 ): ReaderLocation {
   const total = Math.max(1, pageCount)
   const targetPage = clamp(Math.floor(page), 1, total)
@@ -221,7 +216,9 @@ export function pdfLocation(
     page: targetPage,
     pageOffset: clamp(pageOffset, 0, 1),
     relativeViewport: relative,
-    view: pdfViewState(view),
+    // 视图由按 profile 的 reader-overrides 保存。滚动/翻页进度只记录
+    // page/offset，避免每次滚动都把自动 fit-width 写回进度并覆盖恢复视图。
+    view: null,
   }
   return {
     locatorType: "pdf-page",

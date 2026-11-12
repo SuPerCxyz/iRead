@@ -23,6 +23,7 @@ import { ApiError, isRecord } from "@/lib/api"
 import {
   parseBookReaderOverrides,
   parseReaderSettingsEnvelope,
+  type ReaderProfile,
   type ReaderSettingSource,
 } from "../types"
 import {
@@ -53,6 +54,7 @@ interface ReaderSettingsPanelProps {
   bookId: string
   fileVersion: string | null
   format: BookFormat | null
+  profile: ReaderProfile
   enabled: boolean
   pending: Record<string, unknown>
   onPendingChange: (next: Record<string, unknown>) => void
@@ -111,6 +113,7 @@ export function ReaderSettingsPanel({
   bookId,
   fileVersion,
   format,
+  profile,
   enabled,
   pending,
   onPendingChange,
@@ -151,8 +154,8 @@ export function ReaderSettingsPanel({
     enabled,
   })
   const overridesQuery = useQuery({
-    queryKey: readerQueryKeys.bookOverrides(bookId, fileVersion ?? ""),
-    queryFn: ({ signal }) => fetchBookReaderOverrides(bookId, signal),
+    queryKey: readerQueryKeys.bookOverrides(bookId, fileVersion ?? "", profile),
+    queryFn: ({ signal }) => fetchBookReaderOverrides(bookId, profile, signal),
     retry: false,
     enabled: enabled && fileVersion !== null,
   })
@@ -234,7 +237,7 @@ export function ReaderSettingsPanel({
         if (scope === "book" && fileVersion !== null) {
           const parsed = parseBookReaderOverrides(current)
           queryClient.setQueryData(
-            readerQueryKeys.bookOverrides(bookId, fileVersion),
+            readerQueryKeys.bookOverrides(bookId, fileVersion, profile),
             parsed,
           )
         } else if (scope === "global") {

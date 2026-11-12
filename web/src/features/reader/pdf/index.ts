@@ -4,6 +4,7 @@ export {
 } from "./engine"
 export type {
   PdfOutlineRequestOptions,
+  PdfMountOptions,
   PdfPageMetrics,
   PdfReaderEngineOptions,
   PdfReaderResult,

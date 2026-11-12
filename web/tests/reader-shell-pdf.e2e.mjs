@@ -25,6 +25,7 @@ import {
   ensureAdmin,
 } from "./auth-helpers.mjs"
 import { assertReaderToolbarLayout } from "./reader-toolbar-layout.mjs"
+import { cdpPinch } from "./reader-pinch-e2e.mjs"
 
 const WEB_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
 const REPO_ROOT = path.resolve(WEB_ROOT, "..")
@@ -38,6 +39,16 @@ const SCREENSHOT_DIR =
 const TEMP_ROOT = process.env.IREAD_E2E_TMP ?? "/tmp/opencode"
 const PAGE_COUNT = 12
 const PDF_PADDING_LINES = 420
+const BOTTOM_BAR_STABILITY_VIEWPORTS = [
+  { width: 1920, height: 1080 },
+  { width: 1440, height: 900 },
+  { width: 1280, height: 800 },
+  { width: 1152, height: 900 },
+  { width: 1024, height: 768 },
+  { width: 768, height: 1024 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+]
 const LONG_PDF_TITLE =
   "性能之巅 系统、企业与云可观测性（第2版） (Brendan Gregg) (z-library.sk, 1lib.sk, z-lib.sk) 超长书名用于验证阅读器顶栏单行省略与右侧图标不被挤压"
 
@@ -74,6 +85,7 @@ function buildPdf({
     outlineRoot: 100,
     outlineOne: 101,
     outlineTwo: 102,
+    outlineThree: 103,
     encrypt: 200,
   }
   const pageId = (page) => 10 + page
@@ -143,7 +155,7 @@ function buildPdf({
   if (outlines) {
     writeObject(
       ids.outlineRoot,
-      `<< /Type /Outlines /First ${ids.outlineOne} 0 R /Last ${ids.outlineTwo} 0 R /Count 2 >>`,
+      `<< /Type /Outlines /First ${ids.outlineOne} 0 R /Last ${ids.outlineThree} 0 R /Count 3 >>`,
     )
     writeObject(
       ids.outlineOne,
@@ -151,7 +163,11 @@ function buildPdf({
     )
     writeObject(
       ids.outlineTwo,
-      `<< /Title (Chapter Two) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(3)} 0 R /XYZ 0 792 null] >>`,
+      `<< /Title (Chapter Two) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(3)} 0 R /XYZ 0 792 null] /Next ${ids.outlineThree} 0 R >>`,
+    )
+    writeObject(
+      ids.outlineThree,
+      `<< /Title (External Docs) /Parent ${ids.outlineRoot} 0 R /A << /S /URI /URI (https://example.com/iread-docs) >> >>`,
     )
   }
   if (encrypted) {
@@ -164,7 +180,7 @@ function buildPdf({
   const maxId = encrypted
     ? ids.encrypt
     : outlines
-      ? ids.outlineTwo
+      ? ids.outlineThree
       : Math.max(ids.font, pageId(pageCount), contentId(pageCount))
   const xrefOffset = Buffer.byteLength(body)
   body += `xref\n0 ${maxId + 1}\n0000000000 65535 f \n`
@@ -517,23 +533,6 @@ async function waitForPdfPageCount(page, pageCount, timeout = 60_000) {
   )
 }
 
-/** 等待引擎内部目录面板结束 loading 并显示指定提示。 */
-async function waitForEngineOutlineStatus(page, expected, timeout = 15_000) {
-  await page.waitForFunction(
-    (text) => {
-      const panel = document.querySelector(".iread-pdf__outline")
-      const status = document.querySelector(".iread-pdf__outline-status")
-      return (
-        panel !== null &&
-        panel.hidden === false &&
-        status?.textContent === text
-      )
-    },
-    expected,
-    { timeout },
-  )
-}
-
 async function currentPage(page) {
   return page.evaluate(() =>
     Number(document.querySelector(".iread-pdf")?.getAttribute("data-pdf-page")),
@@ -557,6 +556,477 @@ async function waitForShellPage(page, pageNumber) {
   )
 }
 
+/**
+ * 底栏断点与 iread.css 一致：>=72rem 保留完整控件，<72rem 收进“⋯ 更多”。
+ * 五档视口都必须物理单行，不允许页面或底栏出现横向滚动。
+ */
+async function assertBottomBarLayout(page) {
+  const viewports = [
+    { width: 1920, height: 1080 },
+    { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+    { width: 430, height: 932 },
+  ]
+  const originalViewport = page.viewportSize()
+  try {
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport)
+      await page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(resolve))
+          }),
+      )
+      const metrics = await page.evaluate(() => {
+        const bar = document.querySelector(".iread-reader-shell__bottombar")
+        if (bar === null) {
+          return null
+        }
+        const isVisible = (element) => {
+          const rect = element.getBoundingClientRect()
+          const style = getComputedStyle(element)
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden"
+          )
+        }
+        const barRect = bar.getBoundingClientRect()
+        const more = bar.querySelector("[data-reader-more-trigger]")
+        const pdfControls = bar.querySelector("[data-reader-pdf-view-controls]")
+        const jump = bar.querySelector(".iread-reader-shell__jump")
+        const zoomControls = [
+          ...bar.querySelectorAll(
+            "[data-reader-pdf-zoom-in], [data-reader-pdf-zoom-out]",
+          ),
+        ].filter(isVisible)
+        const slider = bar.querySelector('[role="slider"]')
+        return {
+          viewportWidth: window.innerWidth,
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          bar: {
+            rect: barRect.toJSON(),
+            position: getComputedStyle(bar).position,
+            flexWrap: getComputedStyle(bar).flexWrap,
+            scrollWidth: bar.scrollWidth,
+            clientWidth: bar.clientWidth,
+          },
+          moreVisible: more !== null && isVisible(more),
+          moreHaspopup: more?.getAttribute("aria-haspopup") ?? null,
+          moreExpanded: more?.getAttribute("aria-expanded") ?? null,
+          pdfControlsVisible:
+            pdfControls !== null && isVisible(pdfControls),
+          jumpVisible: jump !== null && isVisible(jump),
+          sliderVisible: slider !== null && isVisible(slider),
+          zoomControlCount: zoomControls.length,
+          controls: [...bar.querySelectorAll('button, input, [role="slider"]')]
+            .filter(isVisible)
+            .map((element) => ({
+              label:
+                element.getAttribute("aria-label") ??
+                element.textContent?.trim().slice(0, 30) ??
+                "",
+              tag: element.tagName,
+              rect: element.getBoundingClientRect().toJSON(),
+              minWidth: getComputedStyle(element).minWidth,
+              minHeight: getComputedStyle(element).minHeight,
+              width: getComputedStyle(element).width,
+              height: getComputedStyle(element).height,
+            })),
+        }
+      })
+      const prefix = `PDF 底栏 @ ${viewport.width}x${viewport.height}`
+      assert.ok(metrics !== null, `${prefix}：底栏缺失`)
+      assert.equal(metrics.viewportWidth, viewport.width, `${prefix}：视口宽度异常`)
+      assert.equal(
+        metrics.bar.flexWrap,
+        "nowrap",
+        `${prefix}：底栏必须禁止换行`,
+      )
+      assert.ok(
+        metrics.bar.rect.height <= 64,
+        `${prefix}：底栏必须物理单行，实际高度 ${metrics.bar.rect.height}`,
+      )
+      assert.ok(
+        metrics.bar.scrollWidth <= metrics.bar.clientWidth + 1,
+        `${prefix}：底栏不得横向溢出（${metrics.bar.scrollWidth} > ${metrics.bar.clientWidth}）`,
+      )
+      assert.ok(
+        metrics.scrollWidth <= metrics.clientWidth + 1 &&
+          metrics.bodyScrollWidth <= metrics.clientWidth + 1,
+        `${prefix}：页面不得出现横向溢出`,
+      )
+      for (const control of metrics.controls) {
+        assert.ok(
+          control.rect.top >= metrics.bar.rect.top - 1 &&
+            control.rect.bottom <= metrics.bar.rect.bottom + 1,
+          `${prefix}：控件 ${control.label || "未命名"} 超出单行底栏`,
+        )
+      }
+      if (viewport.width < 72 * 16) {
+        assert.equal(metrics.moreVisible, true, `${prefix}：窄屏必须显示“⋯ 更多”`)
+        assert.equal(
+          metrics.pdfControlsVisible,
+          false,
+          `${prefix}：窄屏完整 PDF 控件应收进菜单`,
+        )
+        assert.equal(metrics.jumpVisible, false, `${prefix}：窄屏跳页应收进菜单`)
+      } else {
+        assert.equal(metrics.moreVisible, false, `${prefix}：宽屏不得显示“⋯ 更多”`)
+        assert.equal(
+          metrics.pdfControlsVisible,
+          true,
+          `${prefix}：宽屏必须保留完整 PDF 控件`,
+        )
+        assert.equal(metrics.jumpVisible, true, `${prefix}：宽屏必须保留页码跳转`)
+      }
+      if (viewport.width < 768) {
+        assert.equal(
+          metrics.bar.position,
+          "absolute",
+          `${prefix}：手机底栏必须悬浮在正文上方`,
+        )
+        assert.equal(
+          metrics.zoomControlCount,
+          0,
+          `${prefix}：手机底栏不得出现可见的放大/缩小按钮`,
+        )
+        assert.equal(
+          metrics.sliderVisible,
+          true,
+          `${prefix}：手机翻页格式必须保留进度条`,
+        )
+        assert.equal(metrics.moreHaspopup, "dialog", `${prefix}：“⋯”必须声明 dialog 弹层`)
+        assert.equal(metrics.moreExpanded, "false", `${prefix}：“⋯”关闭时必须 aria-expanded=false`)
+        for (const control of metrics.controls.filter((item) => item.tag === "BUTTON")) {
+          assert.ok(
+            control.rect.width >= 40 && control.rect.height >= 40,
+            `${prefix}：触控目标 ${control.label || "未命名"} 必须至少 40×40，实际 ${control.rect.width}×${control.rect.height}，min=${control.minWidth}/${control.minHeight}，css=${control.width}/${control.height}`,
+          )
+        }
+      } else {
+        assert.equal(
+          metrics.bar.position,
+          "relative",
+          `${prefix}：桌面/平板底栏必须保持占布局`,
+        )
+      }
+      console.log(
+        `[E2E] 底栏 ${viewport.width}x${viewport.height}：height=${metrics.bar.rect.height}, barScroll=${metrics.bar.scrollWidth}/${metrics.bar.clientWidth}, pageScroll=${metrics.scrollWidth}/${metrics.clientWidth}`,
+      )
+      await page.screenshot({
+        path: path.join(
+          SCREENSHOT_DIR,
+          `bottom-bar-${viewport.width}x${viewport.height}.png`,
+        ),
+      })
+    }
+  } finally {
+    if (originalViewport !== null) {
+      await page.setViewportSize(originalViewport).catch(() => {})
+    }
+  }
+}
+
+/**
+ * 底栏加载态/ready 快照：只读 DOM 与几何，用于断言两阶段结构一致。
+ */
+async function captureBottomBar(page) {
+  const viewportWidth = page.viewportSize()?.width ?? 0
+  await page.waitForFunction(
+    ({ narrow }) => {
+      const bar = document.querySelector(".iread-reader-shell__bottombar")
+      const next = bar?.querySelector("[data-reader-page-next]") ?? null
+      if (bar === null || next === null) {
+        return false
+      }
+      // 跨断点 resize 时 Chromium 的 display:contents + order 重算可能落后一帧；
+      // 等窄屏 order=3 / 宽屏 order=0 再取几何，避免把过渡态当成布局回跳。
+      return narrow ? getComputedStyle(next).order === "3" : getComputedStyle(next).order === "0"
+    },
+    { narrow: viewportWidth < 72 * 16 },
+    { timeout: 5_000, polling: "raf" },
+  )
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      }),
+  )
+  return page.evaluate(() => {
+    const bar = document.querySelector(".iread-reader-shell__bottombar")
+    if (bar === null) {
+      return null
+    }
+    const shell = document.querySelector(".iread-reader-shell")
+    const isVisible = (element) => {
+      if (element === null) {
+        return false
+      }
+      const rect = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden"
+      )
+    }
+    const rectOf = (element) =>
+      element === null ? null : element.getBoundingClientRect().toJSON()
+    const jump = bar.querySelector(".iread-reader-shell__jump")
+    const jumpInput = jump?.querySelector("input") ?? null
+    const jumpSubmit = jump?.querySelector('button[type="submit"]') ?? null
+    const jumpParts = jump
+      ? [
+          jump.querySelector("label"),
+          jumpInput,
+          jumpSubmit,
+        ].map(rectOf)
+      : []
+    const pdf = bar.querySelector("[data-reader-pdf-view-controls]")
+    const more = bar.querySelector("[data-reader-more-trigger]")
+    const slider = bar.querySelector('[role="slider"]')
+    const wide = bar.querySelector(
+      ".iread-reader-shell__position-text--wide",
+    )
+    const compact = bar.querySelector("[data-reader-compact-position]")
+    return {
+      height: bar.getBoundingClientRect().height,
+      flexWrap: getComputedStyle(bar).flexWrap,
+      scrollWidth: bar.scrollWidth,
+      clientWidth: bar.clientWidth,
+      engineReady: shell?.hasAttribute("data-reader-engine-ready") ?? false,
+      ariaBusy: bar.getAttribute("aria-busy"),
+      hintCount: document.querySelectorAll(
+        ".iread-reader-shell__engine-hint",
+      ).length,
+      text: bar.innerText,
+      wideVisible: isVisible(wide),
+      compactVisible: isVisible(compact),
+      compactRect: rectOf(compact),
+      pdfVisible: isVisible(pdf),
+      pdfRect: rectOf(pdf),
+      pdfButtons: [...(pdf?.querySelectorAll("button") ?? [])].map(
+        (button) => ({
+          label: button.getAttribute("aria-label"),
+          disabled: button.disabled,
+        }),
+      ),
+      prevDisabled:
+        bar.querySelector("[data-reader-page-previous]")?.disabled ?? null,
+      nextDisabled:
+        bar.querySelector("[data-reader-page-next]")?.disabled ?? null,
+      prevRect: rectOf(bar.querySelector("[data-reader-page-previous]")),
+      nextRect: rectOf(bar.querySelector("[data-reader-page-next]")),
+      sliderRect: rectOf(slider),
+      sliderDisabled:
+        slider === null
+          ? null
+          : slider.hasAttribute("data-disabled") ||
+            slider.getAttribute("aria-disabled") === "true",
+      jumpVisible: isVisible(jump),
+      jumpRect: rectOf(jump),
+      jumpParts,
+      jumpInputDisabled: jumpInput?.disabled ?? null,
+      jumpSubmitDisabled: jumpSubmit?.disabled ?? null,
+      moreVisible: isVisible(more),
+      moreRect: rectOf(more),
+    }
+  })
+}
+
+async function measureBottomBarAcrossViewports(page, phase) {
+  const originalViewport = page.viewportSize()
+  const results = []
+  try {
+    for (const viewport of BOTTOM_BAR_STABILITY_VIEWPORTS) {
+      await page.setViewportSize(viewport)
+      const snapshot = await captureBottomBar(page)
+      const prefix = `PDF 底栏${phase} @ ${viewport.width}x${viewport.height}`
+      assert.ok(snapshot !== null, `${prefix}：底栏缺失`)
+      assert.equal(snapshot.flexWrap, "nowrap", `${prefix}：底栏必须禁止换行`)
+      assert.ok(
+        snapshot.height > 0 && snapshot.height <= 64,
+        `${prefix}：底栏必须物理单行，实际高度 ${snapshot.height}`,
+      )
+      assert.equal(
+        snapshot.hintCount,
+        0,
+        `${prefix}：不得再出现 engine-hint`,
+      )
+      assert.ok(
+        snapshot.scrollWidth <= snapshot.clientWidth + 1,
+        `${prefix}：底栏不得横向溢出（${snapshot.scrollWidth} > ${snapshot.clientWidth}）`,
+      )
+      assert.equal(
+        snapshot.prevDisabled,
+        phase === "加载态",
+        `${prefix}：上一页 disabled 状态不符`,
+      )
+      assert.equal(
+        snapshot.nextDisabled,
+        phase === "加载态",
+        `${prefix}：下一页 disabled 状态不符`,
+      )
+      assert.equal(
+        snapshot.sliderDisabled,
+        phase === "加载态",
+        `${prefix}：进度条 disabled 状态不符`,
+      )
+
+      if (phase === "加载态") {
+        assert.equal(snapshot.engineReady, false, `${prefix}：不得提前标记 ready`)
+        assert.equal(snapshot.ariaBusy, "true", `${prefix}：底栏必须 aria-busy=true`)
+        assert.match(
+          snapshot.text,
+          /正在读取|读取中/,
+          `${prefix}：position 必须显示读取状态`,
+        )
+        assert.doesNotMatch(
+          snapshot.text,
+          /引擎尚未接入|引擎尚未就绪/,
+          `${prefix}：不得误报引擎未接入`,
+        )
+      } else {
+        assert.equal(snapshot.engineReady, true, `${prefix}：ready 标记缺失`)
+        assert.equal(
+          snapshot.ariaBusy,
+          "false",
+          `${prefix}：ready 后底栏必须 aria-busy=false`,
+        )
+        assert.doesNotMatch(
+          snapshot.text,
+          /正在读取|读取中/,
+          `${prefix}：ready 后不得残留读取状态`,
+        )
+      }
+
+      if (viewport.width >= 72 * 16) {
+        assert.equal(
+          snapshot.pdfVisible,
+          true,
+          `${prefix}：宽屏必须提前渲染 PDF 控件组`,
+        )
+        assert.ok(
+          snapshot.pdfButtons.length >= 6,
+          `${prefix}：PDF 控件组不完整`,
+        )
+        for (const button of snapshot.pdfButtons) {
+          assert.equal(
+            button.disabled,
+            phase === "加载态",
+            `${prefix}：PDF 控件 ${button.label ?? "未命名"} disabled 状态不符`,
+          )
+        }
+        assert.equal(
+          snapshot.jumpVisible,
+          true,
+          `${prefix}：宽屏必须保留页码跳转`,
+        )
+        assert.ok(
+          snapshot.jumpRect !== null &&
+            Math.abs(snapshot.jumpRect.height - 36) <= 1,
+          `${prefix}：跳页行必须保持 36px 高，实际 ${snapshot.jumpRect?.height}`,
+        )
+        const tops = snapshot.jumpParts
+          .filter((rect) => rect !== null)
+          .map((rect) => rect.top)
+        assert.equal(tops.length, 3, `${prefix}：跳页行结构不完整`)
+        assert.ok(
+          Math.max(...tops) - Math.min(...tops) <= 1,
+          `${prefix}：跳页 label/input/button 必须顶部对齐（${tops.join(", ")}）`,
+        )
+        assert.equal(
+          snapshot.jumpInputDisabled,
+          phase === "加载态",
+          `${prefix}：页码输入 disabled 状态不符`,
+        )
+        assert.equal(
+          snapshot.jumpSubmitDisabled,
+          phase === "加载态",
+          `${prefix}：跳转提交 disabled 状态不符`,
+        )
+      } else {
+        assert.equal(
+          snapshot.pdfVisible,
+          false,
+          `${prefix}：窄屏 PDF 控件应仍在“⋯ 更多”中`,
+        )
+        assert.equal(
+          snapshot.moreVisible,
+          true,
+          `${prefix}：窄屏必须显示“⋯ 更多”`,
+        )
+      }
+
+      results.push({ viewport, snapshot })
+      console.log(
+        `[E2E] ${prefix}：height=${snapshot.height}, text=${JSON.stringify(snapshot.text)}, pdf=${snapshot.pdfVisible}, jump=${snapshot.jumpVisible}, prev=${snapshot.prevRect?.left}, next=${snapshot.nextRect?.left}, compact=${snapshot.compactRect?.left}/${snapshot.compactRect?.width}, slider=${snapshot.sliderRect?.left}`,
+      )
+    }
+  } finally {
+    if (originalViewport !== null) {
+      await page.setViewportSize(originalViewport).catch(() => {})
+    }
+  }
+  return results
+}
+
+async function assertLoadingMoreMenuDisabled(page) {
+  const menu = await openPdfMoreMenu(page)
+  await menu.waitFor({ timeout: 5_000 })
+  for (const selector of [
+    "[data-reader-more-zoom-out]",
+    "[data-reader-more-zoom-in]",
+    "[data-reader-more-zoom-reset]",
+    "[data-reader-more-fit-width]",
+    "[data-reader-more-fit-page]",
+    '[data-reader-more-layout="single"]',
+    '[data-reader-more-layout="continuous"]',
+    '[data-reader-more-layout="horizontal"]',
+    "[data-reader-more-rotate]",
+    "[data-reader-more-jump-input]",
+    "[data-reader-more-jump-submit]",
+  ]) {
+    const control = page.locator(selector)
+    assert.equal(
+      await control.count(),
+      1,
+      `加载态“⋯ 更多”菜单缺少 ${selector}`,
+    )
+    assert.equal(
+      await control.isDisabled(),
+      true,
+      `加载态“⋯ 更多”菜单项 ${selector} 必须禁用`,
+    )
+  }
+  await closePdfMoreMenu(page)
+}
+
+async function openPdfMoreMenu(page) {
+  await page.locator("[data-reader-more-trigger]").click()
+  const menu = page.locator("[data-reader-more-menu]")
+  await menu.waitFor({ timeout: 5_000 })
+  assert.equal(
+    await page.locator("[data-reader-more-trigger]").getAttribute("aria-expanded"),
+    "true",
+    "“⋯”打开后必须 aria-expanded=true",
+  )
+  return menu
+}
+
+async function closePdfMoreMenu(page) {
+  const menu = page.locator("[data-reader-more-menu]")
+  await page.keyboard.press("Escape")
+  await menu.waitFor({ state: "hidden" })
+}
+
 async function waitForPdfProgress(api, bookId, page, timeout = 15_000) {
   const deadline = Date.now() + timeout
   let last = null
@@ -577,6 +1047,47 @@ async function waitForPdfProgress(api, bookId, page, timeout = 15_000) {
   }
   throw new Error(
     `等待 PDF 进度第 ${page} 页超时，最后进度：${JSON.stringify(last)}`,
+  )
+}
+
+/**
+ * 页内偏移必须稳定一段时间再读取：跳页/旋转后可能仍有排版的 rAF
+ * 重排把滚动位置回到页首。这里等可观察的 data-pdf-page-offset 连续
+ * 稳定，不用固定 sleep，也不放宽 > 0.02 的核心断言。
+ */
+async function waitForStablePdfOffset(
+  page,
+  { minimum = 0.02, stableMs = 400, timeout = 10_000 } = {},
+) {
+  await page.waitForFunction(
+    ({ minimum, stableMs }) => {
+      const offset = Number(
+        document
+          .querySelector(".iread-pdf")
+          ?.getAttribute("data-pdf-page-offset"),
+      )
+      if (!Number.isFinite(offset) || offset <= minimum) {
+        window.__ireadStablePdfOffset = null
+        return false
+      }
+      const now = performance.now()
+      const state = window.__ireadStablePdfOffset
+      if (
+        !state ||
+        Math.abs(state.offset - offset) > 1e-4
+      ) {
+        window.__ireadStablePdfOffset = { offset, since: now }
+        return false
+      }
+      return now - state.since >= stableMs
+    },
+    { minimum, stableMs },
+    { timeout },
+  )
+  return Number(
+    await page
+      .locator(".iread-pdf")
+      .getAttribute("data-pdf-page-offset"),
   )
 }
 
@@ -606,7 +1117,7 @@ async function main() {
     const adminApi = new AuthedApi(adminRequest, webBase)
     await ensureAdmin(adminApi, webBase, E2E_PASSWORD)
 
-    logStep("配置全局 PDF 设置（布局/缩放/页距/背景/隐藏引擎工具栏）")
+    logStep("配置全局 PDF 设置（布局/缩放/页距/背景）")
     const globalGet = await adminApi.get("/api/v1/settings/reader")
     assert.equal(globalGet.status, 200)
     const globalPut = await adminApi.put("/api/v1/settings/reader", {
@@ -619,7 +1130,6 @@ async function main() {
           manualScale: 1.2,
           gap: "relaxed",
           background: "white",
-          toolbarVisible: false,
         },
       },
     })
@@ -659,37 +1169,6 @@ async function main() {
     )
     console.log(`[E2E] 加密 PDF manifest 409：${JSON.stringify(encrypted.blockedManifest.payload?.error)}`)
 
-    logStep("上传 1 页无目录与 857 页无目录 PDF（目录卡死回归）")
-    const noOutlinePdf = buildPdf({
-      pageCount: 1,
-      outlines: false,
-      paddingLines: 0,
-      pagePaddingLines: 0,
-    })
-    const noOutline = await uploadPdf(
-      adminApi,
-      noOutlinePdf,
-      `shell-pdf-no-outline-${Date.now()}.pdf`,
-      { expectedPageCount: 1 },
-    )
-    const manyPagesPdf = buildPdf({
-      pageCount: 857,
-      outlines: false,
-      paddingLines: 0,
-      pagePaddingLines: 0,
-    })
-    const manyPages = await uploadPdf(
-      adminApi,
-      manyPagesPdf,
-      `shell-pdf-857-${Date.now()}.pdf`,
-      { expectedPageCount: 857 },
-    )
-    assert.equal(noOutline.manifest.formatData.pageCount, 1)
-    assert.equal(manyPages.manifest.formatData.pageCount, 857)
-    console.log(
-      `[E2E] 无目录样本：1 页 bookId=${noOutline.bookId}，857 页 bookId=${manyPages.bookId}`,
-    )
-
     const desktopContext = await browser.newContext({
       baseURL: webBase,
       viewport: { width: 1440, height: 900 },
@@ -698,7 +1177,173 @@ async function main() {
       storageState,
     })
     contexts.push(desktopContext)
+
+    logStep("加载态底栏：与 ready 同构、物理单行、无 engine-hint、PDF 控件禁用")
+    const loadingContext = await browser.newContext({
+      baseURL: webBase,
+      viewport: { width: 1440, height: 900 },
+      locale: "zh-CN",
+      serviceWorkers: "block",
+      storageState,
+    })
+    contexts.push(loadingContext)
+    const loadingPage = await loadingContext.newPage()
+    let releaseLoadingContent = () => {}
+    const loadingContentGate = new Promise((resolve) => {
+      releaseLoadingContent = resolve
+    })
+    await loadingPage.route("**/versions/*/content*", async (route) => {
+      await loadingContentGate
+      await route.continue()
+    })
+    await loadingPage.goto(`/read/${encodeURIComponent(uploaded.bookId)}`, {
+      waitUntil: "domcontentloaded",
+    })
+    await loadingPage
+      .locator(".iread-reader-shell__bottombar")
+      .waitFor({ timeout: 20_000 })
+    await loadingPage
+      .locator("#reader-jump-page")
+      .waitFor({ state: "attached", timeout: 20_000 })
+    await loadingPage
+      .locator("[data-reader-pdf-view-controls]")
+      .waitFor({ timeout: 20_000 })
+    await loadingPage.waitForFunction(
+      () =>
+        /正在读取|读取中/.test(
+          document.querySelector(".iread-reader-shell__bottombar")?.innerText ??
+            "",
+        ),
+      undefined,
+      { timeout: 20_000 },
+    )
+    assert.equal(
+      await loadingPage.locator("[data-reader-engine-ready]").count(),
+      0,
+      "加载态不得提前出现 data-reader-engine-ready",
+    )
+    assert.equal(
+      await loadingPage.locator(".iread-reader-shell__engine-hint").count(),
+      0,
+      "加载态不得出现 engine-hint",
+    )
+
+    const loadingSnapshots = await measureBottomBarAcrossViewports(
+      loadingPage,
+      "加载态",
+    )
+    await loadingPage.setViewportSize({ width: 1920, height: 1080 })
+    await loadingPage.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        }),
+    )
+    await loadingPage.screenshot({
+      path: path.join(SCREENSHOT_DIR, "loading-1920x1080.png"),
+    })
+    await loadingPage.setViewportSize({ width: 390, height: 844 })
+    await loadingPage.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        }),
+    )
+    await loadingPage.screenshot({
+      path: path.join(SCREENSHOT_DIR, "loading-390x844.png"),
+    })
+    await assertLoadingMoreMenuDisabled(loadingPage)
+
+    releaseLoadingContent()
+    await loadingPage
+      .locator(".iread-reader-shell[data-reader-engine-ready]")
+      .waitFor({ timeout: 30_000 })
+    await loadingPage
+      .locator('.iread-pdf[data-pdf-ready="true"]')
+      .waitFor({ timeout: 30_000 })
+    await loadingPage
+      .locator('.iread-pdf__page[data-pdf-page="1"] canvas')
+      .waitFor({ timeout: 30_000 })
+    await loadingPage.waitForFunction(
+      () =>
+        !/正在读取|读取中/.test(
+          document.querySelector(".iread-reader-shell__bottombar")?.innerText ??
+            "",
+        ),
+      undefined,
+      { timeout: 20_000 },
+    )
+    const readySnapshots = await measureBottomBarAcrossViewports(
+      loadingPage,
+      "ready",
+    )
+
+    const readyByWidth = new Map(
+      readySnapshots.map(({ viewport, snapshot }) => [
+        viewport.width,
+        snapshot,
+      ]),
+    )
+    for (const { viewport, snapshot } of loadingSnapshots) {
+      const ready = readyByWidth.get(viewport.width)
+      const prefix = `PDF 底栏加载/ready 对比 @ ${viewport.width}x${viewport.height}`
+      assert.ok(ready !== undefined, `${prefix}：ready 快照缺失`)
+      assert.ok(
+        Math.abs(snapshot.height - ready.height) <= 1,
+        `${prefix}：底栏高度必须一致（${snapshot.height} -> ${ready.height}）`,
+      )
+      for (const key of [
+        "pdfRect",
+        "jumpRect",
+        "moreRect",
+        "sliderRect",
+        "prevRect",
+        "nextRect",
+      ]) {
+        const before = snapshot[key]
+        const after = ready[key]
+        if (before === null || after === null) {
+          continue
+        }
+        assert.ok(
+          Math.abs(before.left - after.left) <= 1 &&
+            Math.abs(before.top - after.top) <= 1,
+          `${prefix}：${key} 位置必须稳定（${before.left},${before.top} -> ${after.left},${after.top}）`,
+        )
+      }
+    }
+
+    await loadingPage.setViewportSize({ width: 1920, height: 1080 })
+    await loadingPage.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        }),
+    )
+    await loadingPage.screenshot({
+      path: path.join(SCREENSHOT_DIR, "ready-1920x1080.png"),
+    })
+    await loadingPage.setViewportSize({ width: 390, height: 844 })
+    await loadingPage.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        }),
+    )
+    await loadingPage.screenshot({
+      path: path.join(SCREENSHOT_DIR, "ready-390x844.png"),
+    })
+    await loadingPage.close()
+    await loadingContext.close()
+
     const page = await desktopContext.newPage()
+    page.on("response", (response) => {
+      if (response.status() === 409) {
+        console.log(
+          `[E2E] 409 ${response.request().method()} ${response.url()}`,
+        )
+      }
+    })
     const contentRequests = []
     const contentResponses = []
     let firstSessionResponseCount = 0
@@ -768,7 +1413,11 @@ async function main() {
     assert.equal(await readyRoot.getAttribute("data-layout"), "continuous")
     assert.equal(await readyRoot.getAttribute("data-zoom"), "fit-page")
     assert.equal(await readyRoot.getAttribute("data-background"), "white")
-    assert.equal(await readyRoot.getAttribute("data-toolbar"), "hidden")
+    assert.equal(
+      await page.locator(".iread-pdf__toolbar").count(),
+      0,
+      "PDF 引擎不得再创建中间工具栏",
+    )
     await page
       .locator('.iread-pdf__page[data-pdf-page="1"] canvas')
       .waitFor({ timeout: 20_000 })
@@ -861,6 +1510,12 @@ async function main() {
     await searchPanel.waitFor({ state: "visible" })
     await page.getByRole("button", { name: "关闭面板", exact: true }).click()
     await searchPanel.waitFor({ state: "hidden" })
+
+    await page.keyboard.press("Control+f")
+    await searchPanel.waitFor({ state: "visible" })
+    await page.keyboard.press("Escape")
+    await searchPanel.waitFor({ state: "hidden" })
+
     // 面板正确恢复触发按钮焦点；阅读方向键在正文区域验证，不抢控件原生键盘操作。
     await page.locator(".iread-reader-shell__stage").focus()
     await page.keyboard.press("ArrowRight")
@@ -901,20 +1556,10 @@ async function main() {
       viewport.scrollLeft += delta + pageRect.width * 0.35
       viewport.dispatchEvent(new Event("scroll"))
     })
-    await page.waitForFunction(
-      () => {
-        const root = document.querySelector(".iread-pdf")
-        return (
-          Number(root?.getAttribute("data-pdf-page")) === 7 &&
-          Number(root?.getAttribute("data-pdf-page-offset")) > 0.02
-        )
-      },
-      undefined,
-      { timeout: 10_000 },
-    )
-    const beforeOffset = Number(
-      await readyRoot.getAttribute("data-pdf-page-offset"),
-    )
+    await page
+      .locator('.iread-pdf__page[data-pdf-page="7"][data-state="ready"]')
+      .waitFor({ timeout: 20_000 })
+    const beforeOffset = await waitForStablePdfOffset(page)
     const beforeRelative = await readyRoot.getAttribute(
       "data-pdf-relative-viewport",
     )
@@ -936,8 +1581,8 @@ async function main() {
       saved?.locatorPayload?.pageOffset > 0.02,
       `保存的 pageOffset 应大于 0，实际 ${saved?.locatorPayload?.pageOffset}`,
     )
-    assert.equal(saved?.locatorPayload?.view?.layoutMode, "horizontal")
-    assert.equal(saved?.locatorPayload?.view?.zoomMode, "fit-width")
+    // 滚动进度只保存位置；视图由按 profile 的 reader-overrides 保存。
+    assert.equal(saved?.locatorPayload?.view, null)
     assert.ok(
       saved?.locatorPayload?.relativeViewport !== null &&
         typeof saved?.locatorPayload?.relativeViewport === "object",
@@ -1415,183 +2060,44 @@ async function main() {
       path: path.join(SCREENSHOT_DIR, "desktop-pdf-final.png"),
     })
 
-    logStep("PDF 目录回归：Shell 预加载后内部面板不得卡在“正在读取目录…”")
-    const globalSettings = await adminApi.get("/api/v1/settings/reader")
-    assert.equal(globalSettings.status, 200)
-    const basePdfSettings = globalSettings.payload?.data?.value?.pdf ?? {}
-    const showToolbar = await adminApi.put("/api/v1/settings/reader", {
-      schemaVersion: 1,
-      baseRevision: globalSettings.payload?.data?.revision ?? "0",
-      value: { pdf: { ...basePdfSettings, toolbarVisible: true } },
+    logStep("Shell PDF 目录外链与无中间栏")
+    assert.equal(
+      await page.locator(".iread-pdf__toolbar").count(),
+      0,
+      "PDF 引擎不得再创建中间工具栏",
+    )
+    await page.getByRole("button", { name: "目录与书签" }).click()
+    const externalToc = page.locator('[data-reader-panel="toc"]')
+    await externalToc.waitFor({ timeout: 5_000 })
+    const externalLink = externalToc.locator('[data-reader-pdf-outline-url]')
+    await externalLink.waitFor({ timeout: 15_000 })
+    assert.equal(
+      await externalLink.getAttribute("href"),
+      "https://example.com/iread-docs",
+      "PDF 目录外链必须保留原始 URL",
+    )
+    assert.equal(await externalLink.getAttribute("target"), "_blank")
+    const externalRel = (await externalLink.getAttribute("rel")) ?? ""
+    assert.ok(externalRel.split(/\s+/).includes("noreferrer"), "外链必须带 noreferrer")
+    assert.ok(externalRel.split(/\s+/).includes("noopener"), "外链必须带 noopener")
+    assert.equal(
+      (await externalLink.textContent())?.trim(),
+      "External Docs",
+      "外链必须显示目录标题",
+    )
+    await page.screenshot({
+      path: path.join(SCREENSHOT_DIR, "desktop-pdf-outline-external.png"),
     })
-    assert.equal(
-      showToolbar.status,
-      200,
-      `显示 PDF 引擎工具栏失败：${JSON.stringify(showToolbar.payload)}`,
-    )
+    await page.getByRole("button", { name: "关闭面板", exact: true }).click()
+    await externalToc.waitFor({ state: "hidden" })
 
-    const outlineContext = await browser.newContext({
-      baseURL: webBase,
-      viewport: { width: 1440, height: 900 },
-      locale: "zh-CN",
-      serviceWorkers: "block",
-      storageState,
-    })
-    contexts.push(outlineContext)
-    const outlinePage = await outlineContext.newPage()
-    const outlinePageErrors = []
-    outlinePage.on("pageerror", (error) => {
-      outlinePageErrors.push(error.message)
-    })
-    const shellToc = outlinePage.locator('[data-reader-panel="toc"]')
-    const engineToc = outlinePage.locator(".iread-pdf__outline")
-    const engineTocStatus = outlinePage.locator(".iread-pdf__outline-status")
-    const openShellToc = async () => {
-      await outlinePage.getByRole("button", { name: "目录与书签" }).click()
-      await shellToc.waitFor({ timeout: 5_000 })
-    }
-    const closeShellToc = async () => {
-      await shellToc.getByRole("button", { name: "关闭面板" }).click()
-      await shellToc.waitFor({ state: "hidden" })
-    }
-    const openEngineToc = async () => {
-      await outlinePage
-        .getByRole("button", { name: "PDF 内置目录" })
-        .click()
-      await engineToc.waitFor({ timeout: 5_000 })
-    }
-    const closeEngineToc = async () => {
-      await outlinePage.getByRole("button", { name: "关闭 PDF 目录" }).click()
-      await engineToc.waitFor({ state: "hidden" })
-    }
-    const waitForPdfRoot = async (bookId, pageCount) => {
-      await outlinePage.goto(`/read/${encodeURIComponent(bookId)}`, {
-        waitUntil: "domcontentloaded",
-      })
-      await outlinePage
-        .locator('.iread-pdf[data-pdf-ready="true"]')
-        .waitFor({ timeout: 60_000 })
-      await waitForPdfPageCount(outlinePage, pageCount)
-      assert.equal(
-        await outlinePage.locator(".iread-pdf").getAttribute("data-toolbar"),
-        "visible",
-        "内部目录回归需要引擎工具栏可见",
-      )
-    }
+    logStep("五档视口：底栏物理单行且无横向溢出")
+    await assertBottomBarLayout(page)
 
-    // 1 页无目录：Shell 先读取目录（旧代码会在这里把内部面板的 loading 永久锁死）。
-    await waitForPdfRoot(noOutline.bookId, 1)
-    await openShellToc()
-    await shellToc
-      .getByText("这份 PDF 没有内置目录。", { exact: true })
-      .waitFor({ timeout: 15_000 })
-    await closeShellToc()
-
-    const noOutlineStartedAt = Date.now()
-    await openEngineToc()
-    await waitForEngineOutlineStatus(
-      outlinePage,
-      "这份 PDF 没有内置目录。",
-      15_000,
-    )
-    const noOutlineSettleMs = Date.now() - noOutlineStartedAt
-    assert.equal(
-      await engineToc.getAttribute("data-outline-state"),
-      "empty",
-      "无目录 PDF 的内部面板必须进入 empty 终态",
-    )
-    assert.ok(
-      noOutlineSettleMs < 15_000,
-      `内部目录不得长期 loading，实际 ${noOutlineSettleMs}ms`,
-    )
-    await closeEngineToc()
-
-    // 关闭后重开仍直接复用结果，不回到 loading。
-    await openEngineToc()
-    assert.equal(
-      await engineTocStatus.textContent(),
-      "这份 PDF 没有内置目录。",
-    )
-    await closeEngineToc()
-
-    // 857 页无目录：同样快速结束，不因页数卡死。
-    await waitForPdfRoot(manyPages.bookId, 857)
-    await openShellToc()
-    await shellToc
-      .getByText("这份 PDF 没有内置目录。", { exact: true })
-      .waitFor({ timeout: 20_000 })
-    await closeShellToc()
-    const manyPagesStartedAt = Date.now()
-    await openEngineToc()
-    await waitForEngineOutlineStatus(
-      outlinePage,
-      "这份 PDF 没有内置目录。",
-      15_000,
-    )
-    const manyPagesSettleMs = Date.now() - manyPagesStartedAt
-    assert.ok(
-      manyPagesSettleMs < 15_000,
-      `857 页 PDF 内部目录不得长期 loading，实际 ${manyPagesSettleMs}ms`,
-    )
-
-    // 目录加载中立即切书：迟到结果不得覆盖新文档。
-    await outlinePage.goto(
-      `/read/${encodeURIComponent(uploaded.bookId)}`,
-      { waitUntil: "domcontentloaded" },
-    )
-    await outlinePage
-      .locator('.iread-pdf[data-pdf-ready="true"]')
-      .waitFor({ timeout: 60_000 })
-    await waitForPdfPageCount(outlinePage, PAGE_COUNT)
-    await openShellToc()
-    await shellToc
-      .getByText("Chapter One", { exact: true })
-      .waitFor({ timeout: 15_000 })
-    await closeShellToc()
-
-    await openEngineToc()
-    await outlinePage
-      .getByRole("button", { name: "跳转到目录：Chapter One" })
-      .waitFor({ timeout: 15_000 })
-    assert.equal(
-      await engineToc.getAttribute("data-outline-state"),
-      "ready",
-      "有目录 PDF 的内部面板必须进入 ready 终态",
-    )
-    assert.equal(
-      await engineTocStatus.textContent(),
-      "共 2 个目录项。",
-      "857 页文档的迟到空目录结果不得覆盖新文档",
-    )
-
-    // 打开后立刻关闭，再打开仍能正常渲染。
-    await outlinePage.getByRole("button", { name: "关闭 PDF 目录" }).click()
-    await engineToc.waitFor({ state: "hidden" })
-    await outlinePage.waitForTimeout(300)
-    assert.equal(await engineToc.isHidden(), true)
-    await openEngineToc()
-    await outlinePage
-      .getByRole("button", { name: "跳转到目录：Chapter One" })
-      .waitFor({ timeout: 15_000 })
-    await closeEngineToc()
-
-    assert.deepEqual(outlinePageErrors, [], "目录交互不得产生页面异常")
-
-    const restoreSettings = await adminApi.get("/api/v1/settings/reader")
-    const restoreToolbar = await adminApi.put("/api/v1/settings/reader", {
-      schemaVersion: 1,
-      baseRevision: restoreSettings.payload?.data?.revision ?? "0",
-      value: { pdf: { ...basePdfSettings, toolbarVisible: false } },
-    })
-    assert.equal(
-      restoreToolbar.status,
-      200,
-      `恢复 PDF 引擎工具栏设置失败：${JSON.stringify(restoreToolbar.payload)}`,
-    )
-    await outlinePage.screenshot({
-      path: path.join(SCREENSHOT_DIR, "desktop-pdf-outline-regression.png"),
-    })
-    await outlineContext.close()
+    // 手机段开始前关闭桌面页：避免同一会话的两个页面并发写进度/轮换 CSRF，
+    // 干扰手机退出保存与跨上下文进度对账。桌面进度已确认在第 7 页。
+    await page.close()
+    await waitForPdfProgress(adminApi, uploaded.bookId, 7)
 
     logStep("手机 390x844：Drawer 搜索/目录、PDF 设置与跳页")
     const mobileContext = await browser.newContext({
@@ -1605,6 +2111,13 @@ async function main() {
     })
     contexts.push(mobileContext)
     const mobile = await mobileContext.newPage()
+    // 手机段只验证搜索/目录/设置/底栏；跨上下文进度对账弹窗按“稍后处理”关闭。
+    await mobile.addLocatorHandler(
+      mobile.getByRole("alertdialog", { name: "阅读进度冲突" }),
+      async () => {
+        await mobile.getByRole("button", { name: "稍后处理" }).click()
+      },
+    )
     await mobile.goto(`/read/${encodeURIComponent(uploaded.bookId)}`, {
       waitUntil: "domcontentloaded",
     })
@@ -1675,13 +2188,323 @@ async function main() {
     await mobile.keyboard.press("Escape")
     await mobileSettings.waitFor({ state: "hidden" })
 
-    await mobile.locator("#reader-jump-page").fill("5")
-    await mobile.getByRole("button", { name: "跳转", exact: true }).click()
+    logStep("手机 390x844：底栏单行与“⋯ 更多”逐项可用")
+    const mobileBar = await mobile.evaluate(() => {
+      const bar = document.querySelector(".iread-reader-shell__bottombar")
+      const rect = bar?.getBoundingClientRect()
+      return {
+        height: rect?.height ?? 0,
+        flexWrap: bar === null ? "" : getComputedStyle(bar).flexWrap,
+        scrollWidth: bar?.scrollWidth ?? 0,
+        clientWidth: bar?.clientWidth ?? 0,
+        pageScrollWidth: document.documentElement.scrollWidth,
+        pageClientWidth: document.documentElement.clientWidth,
+        toolbarCount: document.querySelectorAll(".iread-pdf__toolbar").length,
+        moreVisible:
+          document.querySelector("[data-reader-more-trigger]") !== null,
+      }
+    })
+    assert.ok(mobileBar.height > 0 && mobileBar.height <= 64, `手机底栏必须单行，实际 ${mobileBar.height}`)
+    assert.equal(mobileBar.flexWrap, "nowrap")
+    assert.ok(mobileBar.scrollWidth <= mobileBar.clientWidth + 1, "手机底栏不得横向溢出")
+    assert.ok(
+      mobileBar.pageScrollWidth <= mobileBar.pageClientWidth + 1,
+      "手机页面不得横向溢出",
+    )
+    assert.equal(mobileBar.toolbarCount, 0, "PDF 引擎中间工具栏必须为 0")
+    assert.equal(mobileBar.moreVisible, true, "手机底栏必须显示“⋯ 更多”")
+
+    await openPdfMoreMenu(mobile)
+    for (const selector of [
+      "[data-reader-more-zoom-out]",
+      "[data-reader-more-zoom-in]",
+      "[data-reader-more-fit-width]",
+      "[data-reader-more-fit-page]",
+      '[data-reader-more-layout="single"]',
+      '[data-reader-more-layout="continuous"]',
+      '[data-reader-more-layout="horizontal"]',
+      "[data-reader-more-rotate]",
+      "[data-reader-more-jump-input]",
+      "[data-reader-more-jump-submit]",
+    ]) {
+      assert.equal(
+        await mobile.locator(selector).count(),
+        1,
+        `“⋯ 更多”菜单缺少 ${selector}`,
+      )
+    }
+    await mobile.locator("[data-reader-more-jump-input]").fill("5")
+    await mobile.locator("[data-reader-more-jump-submit]").click()
     await waitForPage(mobile, 5)
     await waitForShellPage(mobile, 5)
+    await mobile.locator("[data-reader-more-menu]").waitFor({ state: "hidden" })
+
+    await openPdfMoreMenu(mobile)
+    const scaleBefore = Number(
+      await mobile.locator(".iread-pdf").getAttribute("data-pdf-scale"),
+    )
+    await mobile.locator("[data-reader-more-zoom-out]").click()
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-zoom") ===
+        "manual",
+      undefined,
+      { timeout: 10_000 },
+    )
+    const scaleAfterOut = Number(
+      await mobile.locator(".iread-pdf").getAttribute("data-pdf-scale"),
+    )
+    assert.ok(
+      scaleAfterOut < scaleBefore,
+      `菜单缩小必须生效（${scaleBefore} -> ${scaleAfterOut}）`,
+    )
+    await mobile.locator("[data-reader-more-zoom-in]").click()
+    await mobile.waitForFunction(
+      (before) =>
+        Number(
+          document.querySelector(".iread-pdf")?.getAttribute("data-pdf-scale"),
+        ) > before,
+      scaleAfterOut,
+      { timeout: 10_000 },
+    )
+    await mobile.locator("[data-reader-more-fit-width]").click()
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-zoom") ===
+        "fit-width",
+      undefined,
+      { timeout: 10_000 },
+    )
+    assert.equal(
+      (await mobile.locator("[data-reader-more-zoom-value]").textContent())?.trim(),
+      "自动",
+      "适宽必须显示“自动”而不是伪造百分比",
+    )
+    await mobile.locator("[data-reader-more-fit-page]").click()
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-zoom") ===
+        "fit-page",
+      undefined,
+      { timeout: 10_000 },
+    )
+    assert.equal(
+      (await mobile.locator("[data-reader-more-zoom-value]").textContent())?.trim(),
+      "自动",
+      "适页必须显示“自动”而不是伪造百分比",
+    )
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-pdf-more-menu.png"),
+    })
+
+    await mobile.locator('[data-reader-more-layout="horizontal"]').click()
+    await mobile.locator("[data-reader-more-menu]").waitFor({ state: "hidden" })
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-layout") ===
+        "horizontal",
+      undefined,
+      { timeout: 10_000 },
+    )
+    assert.equal(await currentPage(mobile), 5, "菜单切换布局不得误翻页")
+    await openPdfMoreMenu(mobile)
+    assert.equal(
+      await mobile
+        .locator('[data-reader-more-layout="horizontal"]')
+        .getAttribute("data-selected"),
+      "true",
+      "菜单必须标出当前布局",
+    )
+    await mobile.locator('[data-reader-more-layout="continuous"]').click()
+    await mobile.locator("[data-reader-more-menu]").waitFor({ state: "hidden" })
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-layout") ===
+        "continuous",
+      undefined,
+      { timeout: 10_000 },
+    )
+
+    await openPdfMoreMenu(mobile)
+    await mobile.locator("[data-reader-more-rotate]").click()
+    await mobile.locator("[data-reader-more-menu]").waitFor({ state: "hidden" })
+    await sleep(500)
+    await waitForPage(mobile, 5)
+    assert.equal(await currentPage(mobile), 5, "菜单旋转不得误翻页")
     await mobile.screenshot({
       path: path.join(SCREENSHOT_DIR, "mobile-pdf-page-5.png"),
     })
+
+    logStep("手机 390x844：悬浮工具栏、双指整体缩放与 locator 恢复")
+    const floating = await mobile.evaluate(() => {
+      const topbar = document.querySelector(".iread-reader-shell__topbar")
+      const bottombar = document.querySelector(".iread-reader-shell__bottombar")
+      const stage = document.querySelector(".iread-reader-shell__stage")
+      return {
+        topbar: {
+          position: getComputedStyle(topbar).position,
+          rect: topbar.getBoundingClientRect().toJSON(),
+        },
+        bottombar: {
+          position: getComputedStyle(bottombar).position,
+          rect: bottombar.getBoundingClientRect().toJSON(),
+        },
+        stage: {
+          rect: stage.getBoundingClientRect().toJSON(),
+          height: innerHeight,
+        },
+      }
+    })
+    assert.equal(floating.topbar.position, "absolute")
+    assert.equal(floating.bottombar.position, "absolute")
+    assert.ok(floating.topbar.rect.top >= 7)
+    assert.ok(floating.bottombar.rect.bottom <= 844 - 7)
+    assert.ok(Math.abs(floating.stage.rect.height - 844) <= 1)
+
+    const beforePinchPage = await currentPage(mobile)
+    const beforePinchScale = Number(
+      await mobile.locator(".iread-pdf").getAttribute("data-pdf-scale"),
+    )
+    const beforeToolbars = await mobile
+      .locator(".iread-reader-shell")
+      .getAttribute("data-toolbars")
+    const pdfPinchBox = await mobile.locator("[data-reader-pdf]").boundingBox()
+    assert.ok(pdfPinchBox !== null)
+    await cdpPinch(mobile, {
+      center: {
+        x: pdfPinchBox.x + pdfPinchBox.width * 0.82,
+        y: pdfPinchBox.y + 150,
+      },
+      startGap: 70,
+      endGap: 190,
+    })
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-zoom") ===
+        "manual",
+      undefined,
+      { timeout: 10_000 },
+    )
+    await mobile.waitForFunction(
+      (before) =>
+        Number(
+          document.querySelector(".iread-pdf")?.getAttribute("data-pdf-scale"),
+        ) > before * 1.05,
+      beforePinchScale,
+      { timeout: 10_000 },
+    )
+    const afterPinchScale = Number(
+      await mobile.locator(".iread-pdf").getAttribute("data-pdf-scale"),
+    )
+    assert.equal(
+      await currentPage(mobile),
+      beforePinchPage,
+      "双指缩放不得改变页码",
+    )
+    assert.equal(
+      await mobile.locator(".iread-reader-shell").getAttribute("data-toolbars"),
+      beforeToolbars,
+      "双指缩放不得切换工具栏",
+    )
+    const pinchState = await mobile.evaluate(() => ({
+      visualScale: window.visualViewport?.scale ?? 1,
+      hasSelection: (() => {
+        const selection = document.getSelection()
+        return selection !== null && !selection.isCollapsed
+      })(),
+      pinching: document
+        .querySelector(".iread-pdf")
+        ?.hasAttribute("data-pdf-pinching"),
+    }))
+    assert.equal(pinchState.visualScale, 1, "内容区捏合不得放大浏览器视口")
+    assert.equal(pinchState.hasSelection, false, "捏合结束必须清除文字选区")
+    assert.equal(pinchState.pinching, false, "捏合结束必须清理预览状态")
+    await mobile.waitForTimeout(800)
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-pdf-pinched.png"),
+    })
+
+    await openPdfMoreMenu(mobile)
+    assert.ok(
+      (await mobile.locator("[data-reader-more-zoom-value]").textContent())?.includes("%"),
+      "捏合后更多菜单必须显示当前缩放值",
+    )
+    assert.equal(
+      await mobile.locator("[data-reader-more-zoom-reset]").count(),
+      1,
+      "更多菜单必须提供复位 100%",
+    )
+    await mobile.locator("[data-reader-more-zoom-reset]").click()
+    await mobile.waitForFunction(
+      () =>
+        Number(
+          document.querySelector(".iread-pdf")?.getAttribute("data-pdf-scale"),
+        ) <= 1.01,
+      undefined,
+      { timeout: 10_000 },
+    )
+    await mobile.keyboard.press("Escape")
+    await mobile.locator("[data-reader-more-menu]").waitFor({ state: "hidden" })
+    // 复位后再次捏合，确保退出重开恢复的是 pinch 结果而不是菜单步进值。
+    await cdpPinch(mobile, {
+      center: {
+        x: pdfPinchBox.x + pdfPinchBox.width * 0.82,
+        y: pdfPinchBox.y + 150,
+      },
+      startGap: 70,
+      endGap: 170,
+    })
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-zoom") ===
+        "manual",
+      undefined,
+      { timeout: 10_000 },
+    )
+    await mobile.waitForFunction(
+      () =>
+        Number(
+          document.querySelector(".iread-pdf")?.getAttribute("data-pdf-scale"),
+        ) > 1,
+      undefined,
+      { timeout: 10_000 },
+    )
+    const persistedScale = Number(
+      await mobile.locator(".iread-pdf").getAttribute("data-pdf-scale"),
+    )
+    const persistedPage = await currentPage(mobile)
+
+    // 先确认捏合后的页码已写入服务器，退出保存基于最新 revision，
+    // 避免与本页此前节流中的进度写产生 409。
+    await waitForPdfProgress(adminApi, uploaded.bookId, persistedPage)
+
+    await mobile.getByRole("button", { name: /返回上一页|返回书库/ }).click()
+    await mobile.waitForFunction(
+      (id) =>
+        location.pathname === "/library" ||
+        location.pathname === `/books/${id}`,
+      uploaded.bookId,
+      { timeout: 15_000 },
+    )
+    await mobile.goto(`/read/${encodeURIComponent(uploaded.bookId)}`, {
+      waitUntil: "domcontentloaded",
+    })
+    await waitForPdfReady(mobile)
+    await mobile.waitForFunction(
+      () =>
+        document.querySelector(".iread-pdf")?.getAttribute("data-zoom") ===
+        "manual",
+      undefined,
+      { timeout: 20_000 },
+    )
+    await waitForPage(mobile, persistedPage)
+    const restoredScale = Number(
+      await mobile.locator(".iread-pdf").getAttribute("data-pdf-scale"),
+    )
+    assert.ok(
+      Math.abs(restoredScale - persistedScale) / persistedScale < 0.05,
+      `重开必须恢复捏合后的 manualScale（${persistedScale} -> ${restoredScale}）`,
+    )
 
     await mobile.setViewportSize({ width: 844, height: 390 })
     await mobile.waitForFunction(

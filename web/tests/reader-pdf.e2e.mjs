@@ -50,6 +50,7 @@ function buildPdf() {
     outlineRoot: 100,
     outlineOne: 101,
     outlineTwo: 102,
+    outlineThree: 103,
   }
   const pageId = (page) => 10 + page
   const contentId = (page) => 30 + page
@@ -112,7 +113,7 @@ function buildPdf() {
 
   writeObject(
     ids.outlineRoot,
-    `<< /Type /Outlines /First ${ids.outlineOne} 0 R /Last ${ids.outlineTwo} 0 R /Count 2 >>`,
+    `<< /Type /Outlines /First ${ids.outlineOne} 0 R /Last ${ids.outlineThree} 0 R /Count 3 >>`,
   )
   writeObject(
     ids.outlineOne,
@@ -120,10 +121,14 @@ function buildPdf() {
   )
   writeObject(
     ids.outlineTwo,
-    `<< /Title (Chapter Two) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(3)} 0 R /XYZ 0 792 null] >>`,
+    `<< /Title (Chapter Two) /Parent ${ids.outlineRoot} 0 R /Dest [${pageId(3)} 0 R /XYZ 0 792 null] /Next ${ids.outlineThree} 0 R >>`,
+  )
+  writeObject(
+    ids.outlineThree,
+    `<< /Title (External Docs) /Parent ${ids.outlineRoot} 0 R /A << /S /URI /URI (https://example.com/iread-docs) >> >>`,
   )
 
-  const maxId = ids.outlineTwo
+  const maxId = ids.outlineThree
   const xrefOffset = Buffer.byteLength(body)
   body += `xref\n0 ${maxId + 1}\n0000000000 65535 f \n`
   for (let id = 1; id <= maxId; id += 1) {
@@ -309,11 +314,9 @@ async function waitForPage(page, pageNumber) {
   await page.waitForFunction(
     (target) => {
       const root = document.querySelector(".iread-pdf")
-      const indicator = root?.querySelector("[data-pdf-page]")
       return (
         root?.getAttribute("data-pdf-ready") === "true" &&
-        Number(root.getAttribute("data-pdf-page")) === target &&
-        indicator?.getAttribute("data-pdf-page") === String(target)
+        Number(root.getAttribute("data-pdf-page")) === target
       )
     },
     pageNumber,
@@ -513,21 +516,24 @@ async function main() {
       })
 
       logStep("翻页、缩放、布局与 locator")
-      await page.getByRole("button", { name: "下一页" }).click()
+      await page.evaluate(async () => {
+        const result = await window.__pdfEngine.advance("next")
+        if (!result.ok) throw new Error(result.reason)
+      })
       await waitForPage(page, 2)
-      await page.getByRole("button", { name: "放大" }).click()
+      await page.evaluate(() => window.__pdfEngine.setManualScale(1.15))
       await page.waitForFunction(() =>
         document.querySelector(".iread-pdf")?.getAttribute("data-zoom") === "manual",
       )
-      await page.getByRole("button", { name: "适应宽度" }).click()
-      await page.getByLabel("页面布局").selectOption("continuous")
+      await page.evaluate(() => window.__pdfEngine.setZoomMode("fit-width"))
+      await page.evaluate(() => window.__pdfEngine.setLayout("continuous"))
       await waitForPage(page, 2)
       await page.waitForFunction(
         () =>
           document.querySelector(".iread-pdf")?.getAttribute("data-layout") ===
           "continuous",
       )
-      await page.getByLabel("页面布局").selectOption("horizontal")
+      await page.evaluate(() => window.__pdfEngine.setLayout("horizontal"))
       await page.waitForFunction(
         () =>
           document.querySelector(".iread-pdf")?.getAttribute("data-layout") ===
@@ -590,11 +596,8 @@ async function main() {
         `远跳 offset 应保留，实际 ${lastLocation.locatorPayload.pageOffset}`,
       )
       assert.ok(lastLocation.locatorPayload.relativeViewport !== null)
-      assert.deepEqual(lastLocation.locatorPayload.view, {
-        layoutMode: "continuous",
-        zoomMode: "fit-width",
-        manualScale: 1,
-      })
+      // 进度 locator 不再写视图，避免滚动自动 fit-width 覆盖 profile 恢复值。
+      assert.equal(lastLocation.locatorPayload.view, null)
 
       logStep("连续跳页复用同一 PDF 会话，不重开全书")
       const sessionReuse = await page.evaluate(async () => {
@@ -686,33 +689,43 @@ async function main() {
       await waitForPage(page, 4)
 
       logStep("搜索逐页 textContent、结果跳转与高亮")
-      await page.getByRole("button", { name: "搜索 PDF" }).click()
-      await page.getByLabel("在 PDF 中搜索").fill("searchable")
-      await page.getByLabel("在 PDF 中搜索").press("Enter")
-      await page
-        .getByText(/找到 \d+ 处|没有找到/, { timeout: 30000 })
-        .waitFor()
-      const resultCount = await page
-        .locator(".iread-pdf__search-result-button")
-        .count()
-      assert.equal(resultCount, PAGE_COUNT, "每页都应命中一次")
-      await page
-        .getByRole("button", { name: /跳转到搜索结果：第 5 页/ })
-        .click()
+      const matchPages = await page.evaluate(async () => {
+        const matches = await window.__pdfEngine.search("searchable")
+        return matches.map((match) => match.page)
+      })
+      assert.equal(matchPages.length, PAGE_COUNT, "每页都应命中一次")
+      await page.evaluate(() => window.__pdfEngine.activateSearchMatch(4))
       await waitForPage(page, 5)
       await waitForReadyPage(page, 5)
       assert.ok(
         (await page.locator(".iread-pdf__text-hit").count()) > 0,
         "搜索命中应在文字层高亮",
       )
-      await page.getByRole("button", { name: "关闭搜索" }).click()
+      await page.evaluate(() => window.__pdfEngine.clearSearch())
 
-      logStep("内置目录与页内链接")
-      await page.getByRole("button", { name: "PDF 内置目录" }).click()
-      await page.getByText("Chapter One", { exact: true }).waitFor()
-      await page.getByRole("button", { name: "跳转到目录：Chapter One" }).click()
+      logStep("内置目录 API 与页内链接")
+      const outline = await page.evaluate(() => window.__pdfEngine.getOutline())
+      assert.equal(outline.length, 3, "内置目录必须由 API 返回全部条目")
+      assert.equal(outline[0].title, "Chapter One")
+      assert.equal(outline[0].page, 1)
+      assert.equal(outline[2].title, "External Docs")
+      assert.equal(outline[2].page, null)
+      assert.equal(outline[2].url, "https://example.com/iread-docs")
+      await page.evaluate(async () => {
+        const result = await window.__pdfEngine.navigateTo({
+          locatorType: "pdf-page",
+          locatorPayload: {
+            locatorVersion: 1,
+            page: 1,
+            pageOffset: 0,
+            relativeViewport: null,
+            view: null,
+          },
+          progressPercent: 0,
+        })
+        if (!result.ok) throw new Error(result.reason)
+      })
       await waitForPage(page, 1)
-      await page.getByRole("button", { name: "关闭 PDF 目录" }).click()
       await waitForReadyPage(page, 1)
       const internalLink = page.locator(
         '.iread-pdf__page[data-pdf-page="1"] .annotationLayer [data-internal-link] a',
@@ -791,6 +804,7 @@ async function main() {
         .waitFor({ timeout: 15000 })
       await errorPage
         .getByText("PDF 原件已在别处更新", { exact: false })
+        .first()
         .waitFor()
       assert.equal(
         await errorPage.getByRole("button", { name: "重试打开 PDF" }).count(),

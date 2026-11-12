@@ -14,6 +14,22 @@ import { ReaderBookmarksPanel } from "./bookmarks-panel"
 import { isNotFoundError } from "./reader-api"
 import { findCurrentTocEntry, flattenPdfOutline, flattenToc } from "./toc"
 
+function safePdfOutlineUrl(value: string): string | null {
+  try {
+    const url = new URL(value, window.location.href)
+    if (
+      url.protocol === "http:" ||
+      url.protocol === "https:" ||
+      url.protocol === "mailto:"
+    ) {
+      return url.href
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 interface ReaderTocPanelProps {
   bookId: string
   manifest: ReaderManifest | null
@@ -238,29 +254,47 @@ export function ReaderTocPanel({
                     <ul className="iread-reader-toc__list">
                       {pdfEntries.map((row) => {
                         const isCurrent = currentPdfOutlineId === row.id
+                        const externalUrl =
+                          row.entry.page === null && row.entry.url !== null
+                            ? safePdfOutlineUrl(row.entry.url)
+                            : null
                         return (
                           <li key={`pdf-${row.id}`}>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className={cn(
-                                "iread-reader-toc__item",
-                                isCurrent && "iread-reader-toc__item--current",
-                              )}
-                              data-level={Math.min(6, row.level + 1)}
-                              data-reader-pdf-outline-page={
-                                row.entry.page ?? undefined
-                              }
-                              aria-current={isCurrent ? "location" : undefined}
-                              disabled={row.entry.page === null}
-                              onClick={() => {
-                                if (row.entry.page !== null) {
-                                  onSelectPdfOutlinePage(row.entry.page)
+                            {externalUrl !== null ? (
+                              <a
+                                className="iread-reader-toc__item iread-reader-toc__external"
+                                data-level={Math.min(6, row.level + 1)}
+                                data-reader-pdf-outline-url={externalUrl}
+                                href={externalUrl}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                aria-label={`打开 PDF 目录外部链接：${row.entry.title}`}
+                              >
+                                {row.entry.title}
+                              </a>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className={cn(
+                                  "iread-reader-toc__item",
+                                  isCurrent && "iread-reader-toc__item--current",
+                                )}
+                                data-level={Math.min(6, row.level + 1)}
+                                data-reader-pdf-outline-page={
+                                  row.entry.page ?? undefined
                                 }
-                              }}
-                            >
-                              {row.entry.title}
-                            </Button>
+                                aria-current={isCurrent ? "location" : undefined}
+                                disabled={row.entry.page === null}
+                                onClick={() => {
+                                  if (row.entry.page !== null) {
+                                    onSelectPdfOutlinePage(row.entry.page)
+                                  }
+                                }}
+                              >
+                                {row.entry.title}
+                              </Button>
+                            )}
                           </li>
                         )
                       })}

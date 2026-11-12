@@ -84,7 +84,13 @@ export interface EpubReaderEngineOptions {
 
 export type EpubContentInput =
   | { kind: "keydown"; event: KeyboardEvent; document: Document }
-  | { kind: "pointerdown" | "pointerup" | "pointercancel"; event: PointerEvent; document: Document; clientX: number; clientY: number }
+  | {
+      kind: "pointerdown" | "pointermove" | "pointerup" | "pointercancel"
+      event: PointerEvent
+      document: Document
+      clientX: number
+      clientY: number
+    }
 
 export interface EpubReaderEngine extends ReaderEngine {
   subscribeContentInput(listener: (input: EpubContentInput) => void): () => void

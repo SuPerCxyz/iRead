@@ -32,6 +32,7 @@ import {
   ensureAdmin,
 } from "./auth-helpers.mjs"
 import { assertReaderToolbarLayout } from "./reader-toolbar-layout.mjs"
+import { cdpPinch } from "./reader-pinch-e2e.mjs"
 
 const WEB_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
 const REPO_ROOT = path.resolve(WEB_ROOT, "..")
@@ -406,9 +407,13 @@ async function openFromLibrary(page, bookId) {
   await page.goto(`${webBase}/library`, { waitUntil: "domcontentloaded" })
   const card = page.locator(`[data-book-card="${bookId}"]`)
   await card.waitFor({ timeout: 20_000 })
-  await card.getByRole("link").click()
+  await card.locator(".iread-book-card__link").click()
   await page.waitForURL(`**/books/${bookId}`, { timeout: 10_000 })
-  const readLink = page.getByRole("link", { name: /开始阅读|继续阅读/ })
+  const detailTopbar = page.locator(".iread-book__topbar")
+  await detailTopbar.waitFor({ timeout: 10_000 })
+  const readLink = detailTopbar.getByRole("link", {
+    name: /开始阅读|继续阅读/,
+  })
   await readLink.waitFor({ timeout: 10_000 })
   await readLink.click()
   await page.waitForURL(`**/read/${bookId}`, { timeout: 10_000 })
@@ -641,15 +646,24 @@ async function waitForStoredPage(api, bookId, page, timeout = 15_000) {
 }
 
 async function jumpToPage(page, pageNumber) {
-  const input = page.locator("#reader-jump-page")
-  await input.fill(String(pageNumber))
-  await page.waitForTimeout(120)
-  await input.press("Enter")
-  await page.waitForTimeout(120)
-  // 极短视口下 Enter 可能先被布局/焦点消耗；用原生表单提交兜底。
-  await page
-    .locator("form.iread-reader-shell__jump")
-    .evaluate((form) => form.requestSubmit())
+  const desktopInput = page.locator("#reader-jump-page")
+  if (await desktopInput.isVisible()) {
+    await desktopInput.fill(String(pageNumber))
+    await page.waitForTimeout(120)
+    await desktopInput.press("Enter")
+    await page.waitForTimeout(120)
+    // 极短视口下 Enter 可能先被布局/焦点消耗；用原生表单提交兜底。
+    await page
+      .locator("form.iread-reader-shell__jump")
+      .evaluate((form) => form.requestSubmit())
+    return
+  }
+  await page.locator("[data-reader-more-trigger]").click()
+  const menuInput = page.locator("[data-reader-more-jump-input]")
+  await menuInput.waitFor({ timeout: 5_000 })
+  await menuInput.fill(String(pageNumber))
+  await page.locator("[data-reader-more-jump-submit]").click()
+  await page.locator("[data-reader-more-menu]").waitFor({ state: "hidden" })
 }
 
 async function readProgressSnapshot(page, bookId) {
@@ -945,7 +959,11 @@ async function main() {
     assert.equal(localSnapshot.locatorPayload.page, 8)
 
     logStep("重新打开恢复第 8 页与已保存的漫画设置")
-    await page.getByRole("link", { name: /继续阅读|开始阅读/ }).click()
+    const restoredTopbar = page.locator(".iread-book__topbar")
+    await restoredTopbar.waitFor({ timeout: 10_000 })
+    await restoredTopbar
+      .getByRole("link", { name: /继续阅读|开始阅读/ })
+      .click()
     await page.waitForURL(`**/read/${cbz.bookId}`, { timeout: 10_000 })
     await waitForComicPage(page, 8)
     snapshot = await comicSnapshot(page)
@@ -1106,7 +1124,7 @@ async function main() {
 
     logStep("退出保存第 12 页与 100%")
     await page.getByRole("button", { name: /返回上一页|返回书库/ }).click()
-    await page.waitForURL("**/library", { timeout: 10_000 })
+    await page.waitForURL(`**/books/${cbz.bookId}`, { timeout: 10_000 })
     const finalCbz = await waitForStoredPage(api, cbz.bookId, 12)
     assert.equal(finalCbz.progressPercent, 100)
 
@@ -1121,7 +1139,7 @@ async function main() {
     await waitForComicPage(page, 3)
     assert.match((await comicSnapshot(page)).position ?? "", /100%/)
     await page.getByRole("button", { name: /返回上一页|返回书库/ }).click()
-    await page.waitForURL("**/library", { timeout: 10_000 })
+    await page.waitForURL(`**/books/${cbr.bookId}`, { timeout: 10_000 })
     const finalCbr = await waitForStoredPage(api, cbr.bookId, 3)
     assert.equal(finalCbr.progressPercent, 100)
     assert.equal(finalCbr.locatorType, "comic-page")
@@ -1151,6 +1169,196 @@ async function main() {
     assert.equal(mobileSnapshot.pages[0].images[0].width, 390)
     assert.equal(mobileSnapshot.pages[0].images[0].height, 219)
 
+    logStep("手机 390x844：悬浮工具栏、底栏控件与“⋯”整体缩放")
+    const comicFloating = await mobile.evaluate(() => {
+      const topbar = document.querySelector(".iread-reader-shell__topbar")
+      const bottombar = document.querySelector(".iread-reader-shell__bottombar")
+      const stage = document.querySelector(".iread-reader-shell__stage")
+      const bar = bottombar
+      const visible = (element) => {
+        if (element === null) return false
+        const rect = element.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      }
+      return {
+        topbarPosition: getComputedStyle(topbar).position,
+        bottombarPosition: getComputedStyle(bottombar).position,
+        topbarTop: topbar.getBoundingClientRect().top,
+        bottombarBottom: bottombar.getBoundingClientRect().bottom,
+        stageHeight: stage.getBoundingClientRect().height,
+        innerHeight,
+        previous: visible(bar.querySelector("[data-reader-page-previous]")),
+        next: visible(bar.querySelector("[data-reader-page-next]")),
+        slider: visible(bar.querySelector('[role="slider"]')),
+        more: visible(bar.querySelector("[data-reader-more-trigger]")),
+        zoom: visible(bar.querySelector("[data-reader-pdf-zoom-in]")) ||
+          visible(bar.querySelector("[data-reader-pdf-zoom-out]")),
+      }
+    })
+    assert.equal(comicFloating.topbarPosition, "absolute")
+    assert.equal(comicFloating.bottombarPosition, "absolute")
+    assert.ok(comicFloating.topbarTop >= 7)
+    assert.ok(comicFloating.bottombarBottom <= comicFloating.innerHeight - 7)
+    assert.ok(Math.abs(comicFloating.stageHeight - comicFloating.innerHeight) <= 1)
+    assert.equal(comicFloating.previous, true)
+    assert.equal(comicFloating.next, true)
+    assert.equal(comicFloating.slider, true)
+    assert.equal(comicFloating.more, true, "漫画手机端必须显示“⋯”")
+    assert.equal(comicFloating.zoom, false, "底栏不得出现可见缩放按钮")
+
+    await mobile.locator("[data-reader-more-trigger]").click()
+    const mobileMore = mobile.locator("[data-reader-more-menu]")
+    await mobileMore.waitFor({ timeout: 5_000 })
+    assert.equal(
+      (await mobile.locator("[data-reader-more-zoom-value]").textContent())?.trim(),
+      "100%",
+    )
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-comic-more-menu.png"),
+    })
+    await mobile.locator("[data-reader-more-zoom-in]").click()
+    await mobile.waitForFunction(
+      () =>
+        Number(
+          document.querySelector(".iread-comic-reader")?.getAttribute("data-zoom"),
+        ) > 1,
+      undefined,
+      { timeout: 5_000 },
+    )
+    await mobile.keyboard.press("Escape")
+    await mobileMore.waitFor({ state: "hidden" })
+    await jumpToPage(mobile, 10)
+    await waitForComicPage(mobile, 10)
+    await mobile.waitForTimeout(250)
+    mobileSnapshot = await comicSnapshot(mobile)
+    assert.equal(mobileSnapshot.pages[0].images[0].width, Math.round(390 * 1.25))
+
+    const comicBeforePinch = await mobile.evaluate(() => {
+      const root = document.querySelector(".iread-comic-reader")
+      const image = root?.querySelector(
+        '.iread-comic-reader__page[data-current="true"] img',
+      )
+      return {
+        page: root?.getAttribute("data-current-page"),
+        width: image?.width ?? 0,
+        zoom: Number(root?.getAttribute("data-zoom") ?? "1"),
+      }
+    })
+    await cdpPinch(mobile, {
+      center: { x: 195, y: 420 },
+      startGap: 60,
+      endGap: 170,
+    })
+    await mobile.waitForFunction(
+      (before) =>
+        Number(
+          document.querySelector(".iread-comic-reader")?.getAttribute("data-zoom"),
+        ) > before * 1.05,
+      comicBeforePinch.zoom,
+      { timeout: 10_000 },
+    )
+    const comicAfterPinch = await mobile.evaluate(() => {
+      const root = document.querySelector(".iread-comic-reader")
+      const image = root?.querySelector(
+        '.iread-comic-reader__page[data-current="true"] img',
+      )
+      return {
+        page: root?.getAttribute("data-current-page"),
+        width: image?.width ?? 0,
+        zoom: Number(root?.getAttribute("data-zoom") ?? "1"),
+        visualScale: window.visualViewport?.scale ?? 1,
+        pinchAttribute: root?.hasAttribute("data-pinching"),
+      }
+    })
+    assert.equal(comicAfterPinch.page, comicBeforePinch.page, "漫画缩放不得翻页")
+    assert.ok(
+      comicAfterPinch.width > comicBeforePinch.width * 1.05,
+      `漫画双指必须放大图片（${comicBeforePinch.width} -> ${comicAfterPinch.width}）`,
+    )
+    assert.equal(comicAfterPinch.visualScale, 1)
+    assert.equal(comicAfterPinch.pinchAttribute, false)
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-comic-pinched.png"),
+    })
+    await mobile.locator("[data-reader-more-trigger]").click()
+    await mobile.locator("[data-reader-more-zoom-reset]").click()
+    await mobile.waitForFunction(
+      () =>
+        document
+          .querySelector(".iread-comic-reader")
+          ?.getAttribute("data-zoom") === "1.00",
+      undefined,
+      { timeout: 5_000 },
+    )
+    await mobile.keyboard.press("Escape")
+    await mobileMore.waitFor({ state: "hidden" })
+
+    await mobile.getByRole("button", { name: "阅读设置" }).click()
+    const mobileComicSettings = mobile.locator('[data-reader-panel="settings"]')
+    await mobileComicSettings.waitFor({ timeout: 5_000 })
+    await applySetting(mobile, "阅读方向", "从右到左")
+    await applySetting(mobile, "显示模式", "双页")
+    await closePanel(mobile, mobileComicSettings)
+    await jumpToPage(mobile, 10)
+    await waitForComicPage(mobile, 10)
+    await mobile.waitForTimeout(300)
+    const doubleBefore = await mobile.evaluate(() => {
+      const root = document.querySelector(".iread-comic-reader")
+      return {
+        direction: root?.getAttribute("data-direction"),
+        mode: root?.getAttribute("data-mode"),
+        page: root?.getAttribute("data-current-page"),
+        widths: [...root.querySelectorAll(".iread-comic-reader__spread img")].map(
+          (image) => image.width,
+        ),
+      }
+    })
+    assert.equal(doubleBefore.direction, "rtl")
+    assert.equal(doubleBefore.mode, "double")
+    assert.ok(doubleBefore.widths.length >= 1)
+    await cdpPinch(mobile, {
+      center: { x: 195, y: 420 },
+      startGap: 60,
+      endGap: 150,
+    })
+    await mobile.waitForFunction(
+      () =>
+        Number(
+          document.querySelector(".iread-comic-reader")?.getAttribute("data-zoom"),
+        ) > 1,
+      undefined,
+      { timeout: 10_000 },
+    )
+    const doubleAfter = await mobile.evaluate(() => {
+      const root = document.querySelector(".iread-comic-reader")
+      return {
+        page: root?.getAttribute("data-current-page"),
+        widths: [...root.querySelectorAll(".iread-comic-reader__spread img")].map(
+          (image) => image.width,
+        ),
+      }
+    })
+    assert.equal(doubleAfter.page, doubleBefore.page, "RTL 双页缩放不得换页")
+    assert.ok(
+      doubleAfter.widths[0] > doubleBefore.widths[0],
+      "RTL 双页缩放必须放大当前跨页",
+    )
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-comic-rtl-double-pinched.png"),
+    })
+    await mobile.locator("[data-reader-more-trigger]").click()
+    await mobile.locator("[data-reader-more-zoom-reset]").click()
+    await mobile.waitForFunction(
+      () =>
+        document
+          .querySelector(".iread-comic-reader")
+          ?.getAttribute("data-zoom") === "1.00",
+      undefined,
+      { timeout: 5_000 },
+    )
+    await mobile.keyboard.press("Escape")
+    await mobileMore.waitFor({ state: "hidden" })
+
     await mobile.getByRole("button", { name: "阅读设置" }).click()
     const mobileSettings = mobile.locator('[data-reader-panel="settings"]')
     await mobileSettings.waitFor({ timeout: 5_000 })
@@ -1170,6 +1378,52 @@ async function main() {
     assert.equal(mobileSnapshot.pages.length, CBZ_PAGE_COUNT)
     await mobile.screenshot({
       path: path.join(SCREENSHOT_DIR, "mobile-comic-continuous.png"),
+    })
+    const continuousBefore = await mobile.evaluate(() => {
+      const root = document.querySelector(".iread-comic-reader")
+      const current = root?.querySelector(
+        '.iread-comic-reader__page[data-current="true"] img',
+      )
+      return {
+        page: root?.getAttribute("data-current-page"),
+        width: current?.width ?? 0,
+        scrollTop: root?.scrollTop ?? 0,
+      }
+    })
+    await cdpPinch(mobile, {
+      center: { x: 195, y: 420 },
+      startGap: 60,
+      endGap: 150,
+    })
+    await mobile.waitForFunction(
+      () =>
+        Number(
+          document.querySelector(".iread-comic-reader")?.getAttribute("data-zoom"),
+        ) > 1,
+      undefined,
+      { timeout: 10_000 },
+    )
+    const continuousAfter = await mobile.evaluate(() => {
+      const root = document.querySelector(".iread-comic-reader")
+      const current = root?.querySelector(
+        '.iread-comic-reader__page[data-current="true"] img',
+      )
+      return {
+        page: root?.getAttribute("data-current-page"),
+        width: current?.width ?? 0,
+      }
+    })
+    assert.equal(
+      continuousAfter.page,
+      continuousBefore.page,
+      "连续模式缩放不得改变当前页",
+    )
+    assert.ok(
+      continuousAfter.width > continuousBefore.width,
+      "连续模式缩放必须放大图片",
+    )
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-comic-continuous-pinched.png"),
     })
 
     assert.deepEqual(pageErrors, [], `桌面页面脚本错误：${pageErrors.join("\n")}`)

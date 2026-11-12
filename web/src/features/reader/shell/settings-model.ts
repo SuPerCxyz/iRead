@@ -228,9 +228,9 @@ export const READER_SETTING_GROUPS: ReaderSettingGroup[] = [
       {
         key: "zoomMode",
         label: "缩放模式",
-        description: "适应宽度/页面，或手动比例。",
+        description: "默认 100%，或适应宽度/页面。",
         control: "select",
-        defaultValue: "fit-width",
+        defaultValue: "manual",
         options: [
           { value: "fit-width", label: "适应宽度" },
           { value: "fit-page", label: "适应页面" },
@@ -261,13 +261,6 @@ export const READER_SETTING_GROUPS: ReaderSettingGroup[] = [
           { value: "standard", label: "标准" },
           { value: "relaxed", label: "宽松" },
         ],
-      },
-      {
-        key: "toolbarVisible",
-        label: "显示 PDF 工具栏",
-        description: "关闭后由阅读器外壳接管翻页与跳转。",
-        control: "switch",
-        defaultValue: true,
       },
       {
         key: "background",

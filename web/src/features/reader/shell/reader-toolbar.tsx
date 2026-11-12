@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  Ellipsis,
   ListTree,
   Maximize,
   Minimize,
@@ -17,6 +18,13 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { ReaderSlider as Slider } from "./reader-slider"
 import {
   Tooltip,
@@ -48,6 +56,12 @@ const PDF_LAYOUT_LABELS: Record<PdfLayoutMode, string> = {
   continuous: "连续",
   horizontal: "横向",
 }
+
+const PDF_LAYOUT_ORDER: readonly PdfLayoutMode[] = [
+  "single",
+  "continuous",
+  "horizontal",
+]
 
 interface ReaderTopToolbarProps {
   visible: boolean
@@ -237,10 +251,13 @@ export function ReaderTopToolbar({
 
 interface ReaderBottomToolbarProps {
   visible: boolean
+  mobile: boolean
   format: BookFormat | null
   location: ReaderLocation | null
   pageCount: number | null
   canNavigate: boolean
+  engineReady: boolean
+  navigationUnavailableReason: string | null
   onPreviousPage: () => void
   onNextPage: () => void
   onSeekPercent: (percent: number) => void
@@ -248,18 +265,27 @@ interface ReaderBottomToolbarProps {
   pdfView: PdfViewSettings | null
   onPdfZoomIn: () => void
   onPdfZoomOut: () => void
+  zoomLabel: string
+  zoomAvailable: boolean
+  onZoomIn: () => void
+  onZoomOut: () => void
+  onResetZoom: () => void
   onPdfFitWidth: () => void
   onPdfFitPage: () => void
   onPdfRotate: () => void
   onPdfCycleLayout: () => void
+  onPdfSetLayout: (layout: PdfLayoutMode) => void
 }
 
 export function ReaderBottomToolbar({
   visible,
+  mobile,
   format,
   location,
   pageCount,
   canNavigate,
+  engineReady,
+  navigationUnavailableReason,
   onPreviousPage,
   onNextPage,
   onSeekPercent,
@@ -267,15 +293,22 @@ export function ReaderBottomToolbar({
   pdfView,
   onPdfZoomIn,
   onPdfZoomOut,
+  zoomLabel,
+  zoomAvailable,
+  onZoomIn,
+  onZoomOut,
+  onResetZoom,
   onPdfFitWidth,
   onPdfFitPage,
   onPdfRotate,
   onPdfCycleLayout,
+  onPdfSetLayout,
 }: ReaderBottomToolbarProps) {
   const { value } = useAppearance()
   const buttonSize = buttonSizeForDensity(value.density)
   const [jumpValue, setJumpValue] = useState("")
   const [jumpError, setJumpError] = useState<string | null>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
 
   const page = location === null ? null : locatorPage(location)
   const isPaged = format === "pdf" || format === "cbz" || format === "cbr"
@@ -288,11 +321,24 @@ export function ReaderBottomToolbar({
       : page !== null && pageCount !== null
         ? `第 ${page} / ${pageCount} 页 · ${formatProgressPercent(location.progressPercent)}`
         : `位置 ${formatProgressPercent(location.progressPercent)}`
+  const compactPositionText =
+    location === null
+      ? "未就绪"
+      : page !== null && pageCount !== null
+        ? `${page}/${pageCount} · ${formatProgressPercent(location.progressPercent)}`
+        : formatProgressPercent(location.progressPercent)
+  const isPdf = format === "pdf" && pdfView !== null
+  const jumpAvailable = isPaged && pageCount !== null
+  const showMore = mobile || isPdf || jumpAvailable
+  // 加载态与 ready 共用同一底栏结构：状态只附在 position 文案尾部，
+  // 不新增会改变 flex 行的子项；ready 后若仍不可翻页则说明具体原因。
+  const wideStatus = !engineReady ? "正在读取…" : navigationUnavailableReason
+  const compactStatus = !engineReady ? "读取中" : navigationUnavailableReason
+  const pdfControlsDisabled = !engineReady
 
-  const handleJump = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const parseJump = (): number | null => {
     if (pageCount === null) {
-      return
+      return null
     }
     const parsed = Number(jumpValue)
     if (
@@ -302,10 +348,27 @@ export function ReaderBottomToolbar({
       parsed > pageCount
     ) {
       setJumpError(`请输入 1–${pageCount} 的页码。`)
-      return
+      return null
     }
     setJumpError(null)
-    onJumpToPage(parsed)
+    return parsed
+  }
+
+  const handleJump = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const target = parseJump()
+    if (target !== null) {
+      onJumpToPage(target)
+    }
+  }
+
+  const handleMoreJump = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const target = parseJump()
+    if (target !== null) {
+      onJumpToPage(target)
+      setMoreOpen(false)
+    }
   }
 
   return (
@@ -313,9 +376,36 @@ export function ReaderBottomToolbar({
       className="iread-reader-shell__bottombar"
       inert={!visible}
       aria-hidden={!visible}
+      aria-busy={!engineReady}
     >
       <div className="iread-reader-shell__position">
-        <span className="iread-reader-shell__position-text">{positionText}</span>
+        <span className="iread-reader-shell__position-text iread-reader-shell__position-text--wide">
+          {positionText}
+          <span
+            className="iread-reader-shell__position-status"
+            data-reader-engine-status
+            aria-hidden="true"
+            data-placeholder={wideStatus === null ? "true" : undefined}
+          >
+            {" · "}
+            {wideStatus ?? "正在读取…"}
+          </span>
+        </span>
+        <span
+          className="iread-reader-shell__position-text-compact"
+          data-reader-compact-position
+        >
+          {compactPositionText}
+          <span
+            className="iread-reader-shell__position-status"
+            data-reader-engine-status
+            aria-hidden="true"
+            data-placeholder={compactStatus === null ? "true" : undefined}
+          >
+            {" · "}
+            {compactStatus ?? "读取中"}
+          </span>
+        </span>
         {percent === null || !isPaged ? null : (
           <Slider
             aria-label="阅读位置"
@@ -334,7 +424,7 @@ export function ReaderBottomToolbar({
         )}
       </div>
 
-      <div className="iread-reader-shell__page-nav">
+      <div className="iread-reader-shell__page-nav iread-reader-shell__page-nav--pager">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -371,7 +461,7 @@ export function ReaderBottomToolbar({
 
       {format === "pdf" && pdfView !== null ? (
         <div
-          className="iread-reader-shell__page-nav"
+          className="iread-reader-shell__page-nav iread-reader-shell__pdf-controls"
           data-reader-pdf-view-controls
         >
           <Tooltip>
@@ -382,6 +472,7 @@ export function ReaderBottomToolbar({
                 size="icon-sm"
                 aria-label="缩小 PDF"
                 data-reader-pdf-zoom-out
+                disabled={pdfControlsDisabled}
                 onClick={onPdfZoomOut}
               >
                 <ZoomOut aria-hidden="true" />
@@ -405,6 +496,7 @@ export function ReaderBottomToolbar({
                 size="icon-sm"
                 aria-label="放大 PDF"
                 data-reader-pdf-zoom-in
+                disabled={pdfControlsDisabled}
                 onClick={onPdfZoomIn}
               >
                 <ZoomIn aria-hidden="true" />
@@ -418,6 +510,7 @@ export function ReaderBottomToolbar({
             size="sm"
             aria-label="适应 PDF 宽度"
             data-reader-pdf-fit-width
+            disabled={pdfControlsDisabled}
             onClick={onPdfFitWidth}
           >
             适宽
@@ -428,6 +521,7 @@ export function ReaderBottomToolbar({
             size="sm"
             aria-label="适应 PDF 页面"
             data-reader-pdf-fit-page
+            disabled={pdfControlsDisabled}
             onClick={onPdfFitPage}
           >
             适页
@@ -438,6 +532,7 @@ export function ReaderBottomToolbar({
             size="sm"
             aria-label={`切换 PDF 布局，当前${PDF_LAYOUT_LABELS[pdfView.layoutMode]}`}
             data-reader-pdf-layout={pdfView.layoutMode}
+            disabled={pdfControlsDisabled}
             onClick={onPdfCycleLayout}
           >
             布局：{PDF_LAYOUT_LABELS[pdfView.layoutMode]}
@@ -450,6 +545,7 @@ export function ReaderBottomToolbar({
                 size="icon-sm"
                 aria-label="旋转 PDF 页面"
                 data-reader-pdf-rotate
+                disabled={pdfControlsDisabled}
                 onClick={onPdfRotate}
               >
                 <RotateCw aria-hidden="true" />
@@ -475,6 +571,7 @@ export function ReaderBottomToolbar({
             inputMode="numeric"
             autoComplete="off"
             value={jumpValue}
+            disabled={!canNavigate}
             aria-invalid={jumpError !== null}
             aria-describedby={jumpError === null ? undefined : "reader-jump-error"}
             onChange={(event) => {
@@ -502,13 +599,215 @@ export function ReaderBottomToolbar({
         </form>
       ) : null}
 
-      {canNavigate ? null : (
-        <p className="iread-reader-shell__engine-hint">
-          {format === null
-            ? "阅读引擎尚未就绪。"
-            : "阅读引擎尚未接入，翻页、位置与跳转暂不可用。"}
-        </p>
-      )}
+      {showMore ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="iread-reader-shell__more"
+          aria-label="更多阅读工具"
+          aria-haspopup="dialog"
+          aria-expanded={moreOpen}
+          data-reader-more-trigger
+          onClick={() => setMoreOpen(true)}
+        >
+          <Ellipsis aria-hidden="true" />
+        </Button>
+      ) : null}
+
+      <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+        <SheetContent
+          side="bottom"
+          className="iread-reader-more"
+          data-reader-more-menu
+        >
+          <SheetHeader>
+            <SheetTitle>更多阅读工具</SheetTitle>
+            <SheetDescription>
+              窄屏下收纳缩放、布局、旋转与页码跳转。
+            </SheetDescription>
+          </SheetHeader>
+          <div className="iread-reader-more__body">
+            {!zoomAvailable && !isPdf && !jumpAvailable ? (
+              <p className="iread-reader-more__label">
+                当前模式暂无可调工具。
+              </p>
+            ) : null}
+            {zoomAvailable && (mobile || isPdf) ? (
+              <div className="iread-reader-more__group">
+                <p className="iread-reader-more__label">缩放</p>
+                <div className="iread-reader-more__row">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label="更多工具：缩小"
+                    data-reader-more-zoom-out
+                    disabled={!engineReady}
+                    onClick={onZoomOut}
+                  >
+                    <ZoomOut aria-hidden="true" />
+                  </Button>
+                  <span
+                    className="iread-reader-more__zoom-value"
+                    data-reader-more-zoom-value
+                    aria-live="polite"
+                  >
+                    {zoomLabel}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label="更多工具：放大"
+                    data-reader-more-zoom-in
+                    disabled={!engineReady}
+                    onClick={onZoomIn}
+                  >
+                    <ZoomIn aria-hidden="true" />
+                  </Button>
+                </div>
+                {mobile ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    aria-label="更多工具：复位 100%"
+                    data-reader-more-zoom-reset
+                    disabled={!engineReady}
+                    onClick={onResetZoom}
+                  >
+                    复位 100%
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {isPdf ? (
+              <>
+                <div className="iread-reader-more__group">
+                  <p className="iread-reader-more__label">PDF 适配</p>
+                  <div className="iread-reader-more__grid">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      aria-label="更多工具：适应 PDF 宽度"
+                      data-reader-more-fit-width
+                      disabled={!engineReady}
+                      onClick={onPdfFitWidth}
+                    >
+                      适宽
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      aria-label="更多工具：适应 PDF 页面"
+                      data-reader-more-fit-page
+                      disabled={!engineReady}
+                      onClick={onPdfFitPage}
+                    >
+                      适页
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="iread-reader-more__group">
+                  <p className="iread-reader-more__label">
+                    布局：{PDF_LAYOUT_LABELS[pdfView.layoutMode]}
+                  </p>
+                  <div className="iread-reader-more__grid">
+                    {PDF_LAYOUT_ORDER.map((mode) => (
+                      <Button
+                        key={mode}
+                        type="button"
+                        variant="outline"
+                        aria-label={`更多工具：${PDF_LAYOUT_LABELS[mode]}布局`}
+                        aria-pressed={pdfView.layoutMode === mode}
+                        data-reader-more-layout={mode}
+                        data-selected={
+                          pdfView.layoutMode === mode ? "true" : undefined
+                        }
+                        disabled={!engineReady}
+                        onClick={() => {
+                          onPdfSetLayout(mode)
+                          setMoreOpen(false)
+                        }}
+                      >
+                        {PDF_LAYOUT_LABELS[mode]}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  aria-label="更多工具：旋转 PDF 页面 90 度"
+                  data-reader-more-rotate
+                  disabled={!engineReady}
+                  onClick={() => {
+                    onPdfRotate()
+                    setMoreOpen(false)
+                  }}
+                >
+                  <RotateCw aria-hidden="true" />
+                  旋转 90°
+                </Button>
+              </>
+            ) : null}
+
+            {jumpAvailable ? (
+              <form
+                className="iread-reader-more__group"
+                onSubmit={handleMoreJump}
+              >
+                <label
+                  className="iread-reader-more__label"
+                  htmlFor="reader-jump-page-more"
+                >
+                  页码跳转
+                </label>
+                <div className="iread-reader-more__jump">
+                  <Input
+                    id="reader-jump-page-more"
+                    className="iread-reader-more__jump-input"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    value={jumpValue}
+                    disabled={!canNavigate}
+                    aria-invalid={jumpError !== null}
+                    aria-describedby={
+                      jumpError === null ? undefined : "reader-jump-error-more"
+                    }
+                    data-reader-more-jump-input
+                    onChange={(event) => {
+                      setJumpValue(event.target.value)
+                      setJumpError(null)
+                    }}
+                  />
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    disabled={!canNavigate}
+                    data-reader-more-jump-submit
+                  >
+                    跳转
+                  </Button>
+                </div>
+                {jumpError === null ? null : (
+                  <p
+                    id="reader-jump-error-more"
+                    className="iread-reader-more__error"
+                    role="alert"
+                  >
+                    {jumpError}
+                  </p>
+                )}
+              </form>
+            ) : null}
+          </div>
+        </SheetContent>
+      </Sheet>
     </footer>
   )
 }

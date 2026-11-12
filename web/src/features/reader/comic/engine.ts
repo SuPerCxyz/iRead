@@ -41,12 +41,21 @@ const CAPABILITIES: ReaderCapabilities = {
   canRender: true,
   canNavigate: true,
   canSearch: false,
-  canZoom: false,
-  features: ["bookmarks", "settings", "page-navigation"],
+  canZoom: true,
+  features: ["bookmarks", "settings", "page-navigation", "zoom"],
   unavailableReason: "",
 }
 
 const VIEWPORT_FRAME_DELAY = 90
+const COMIC_MIN_ZOOM = 0.5
+const COMIC_MAX_ZOOM = 3
+
+function clampZoom(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1
+  }
+  return Math.min(COMIC_MAX_ZOOM, Math.max(COMIC_MIN_ZOOM, value))
+}
 
 function fail(reason: string, retryable = false): ReaderEngineResult {
   return { ok: false, reason, retryable }
@@ -121,6 +130,18 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
   private mobileQuery: MediaQueryList | null = null
   private pointer: PointerCandidate | null = null
   private suppressScrollUntil = 0
+  private zoom = 1
+  private pinchActive = false
+  private pinchBaseZoom = 1
+  private pinchPreview = 1
+  private pinchContent: HTMLElement | null = null
+  private pinchAnchor: {
+    page: number
+    ratioX: number
+    ratioY: number
+    clientX: number
+    clientY: number
+  } | null = null
   private readonly onSignalAbort = (): void => {
     this.unmount()
   }
@@ -142,6 +163,172 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
 
   getLocation(): ReaderLocation | null {
     return this.lastLocation
+  }
+
+  getZoom(): number {
+    const preview = this.pinchActive ? this.zoom * this.pinchPreview : this.zoom
+    return clampZoom(preview)
+  }
+
+  beginPinch(x: number, y: number): void {
+    if (!this.mounted || this.root === null) {
+      return
+    }
+    const content = this.pinchContentElement()
+    if (content === null) {
+      return
+    }
+    this.pinchActive = true
+    this.pinchBaseZoom = this.zoom
+    this.pinchPreview = 1
+    this.pinchContent = content
+    const rect = content.getBoundingClientRect()
+    content.style.transformOrigin = `${x - rect.left}px ${y - rect.top}px`
+    content.style.transform = "scale(1)"
+    this.root.setAttribute("data-pinching", "")
+    this.pinchAnchor = this.anchorAtPoint(x, y)
+  }
+
+  updatePinch(scale: number): void {
+    const content = this.pinchContent
+    if (
+      !this.pinchActive ||
+      content === null ||
+      !Number.isFinite(scale)
+    ) {
+      return
+    }
+    const next = clampZoom(this.pinchBaseZoom * Math.max(0.01, scale))
+    this.pinchPreview = next / this.pinchBaseZoom
+    content.style.transform = `scale(${this.pinchPreview})`
+    if (this.root !== null) {
+      this.root.setAttribute("data-zoom", next.toFixed(2))
+    }
+  }
+
+  endPinch(commit = true): void {
+    if (!this.pinchActive) {
+      return
+    }
+    const next = clampZoom(this.pinchBaseZoom * this.pinchPreview)
+    const content = this.pinchContent
+    this.pinchActive = false
+    this.pinchPreview = 1
+    this.pinchContent = null
+    if (content !== null) {
+      content.style.transform = ""
+      content.style.transformOrigin = ""
+    }
+    this.root?.removeAttribute("data-pinching")
+    if (commit) {
+      this.zoom = next
+    }
+    this.updateAttributes()
+    if (this.mounted) {
+      this.applyViewportLayout()
+      this.restorePinchAnchor()
+    }
+    this.pinchAnchor = null
+  }
+
+  resetZoom(): void {
+    this.cancelPinchPreview()
+    if (this.zoom === 1) {
+      return
+    }
+    this.zoom = 1
+    this.updateAttributes()
+    if (this.mounted) {
+      this.applyViewportLayout()
+      this.scrollToPage(this.page)
+    }
+  }
+
+  private cancelPinchPreview(): void {
+    if (!this.pinchActive) {
+      return
+    }
+    this.pinchActive = false
+    this.pinchPreview = 1
+    this.zoom = this.pinchBaseZoom
+    const content = this.pinchContent
+    this.pinchContent = null
+    if (content !== null) {
+      content.style.transform = ""
+      content.style.transformOrigin = ""
+    }
+    this.root?.removeAttribute("data-pinching")
+    this.updateAttributes()
+  }
+
+  private pinchContentElement(): HTMLElement | null {
+    const viewport = this.viewport
+    if (viewport === null) {
+      return null
+    }
+    return (
+      viewport.querySelector<HTMLElement>(
+        ".iread-comic-reader__spread, .iread-comic-reader__continuous",
+      ) ?? (viewport.firstElementChild as HTMLElement | null)
+    )
+  }
+
+  private anchorAtPoint(
+    clientX: number,
+    clientY: number,
+  ): {
+    page: number
+    ratioX: number
+    ratioY: number
+    clientX: number
+    clientY: number
+  } | null {
+    for (const [page, slot] of this.slots) {
+      const rect = slot.element.getBoundingClientRect()
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom &&
+        rect.width > 0 &&
+        rect.height > 0
+      ) {
+        return {
+          page,
+          ratioX: (clientX - rect.left) / rect.width,
+          ratioY: (clientY - rect.top) / rect.height,
+          clientX,
+          clientY,
+        }
+      }
+    }
+    return null
+  }
+
+  private restorePinchAnchor(): void {
+    const anchor = this.pinchAnchor
+    const root = this.root
+    if (anchor === null || root === null) {
+      return
+    }
+    const slot = this.slots.get(anchor.page)
+    if (slot === undefined) {
+      this.scrollToPage(this.page)
+      return
+    }
+    const rootRect = root.getBoundingClientRect()
+    const rect = slot.element.getBoundingClientRect()
+    const deltaX =
+      rect.left + rect.width * anchor.ratioX - anchor.clientX
+    const deltaY =
+      rect.top + rect.height * anchor.ratioY - anchor.clientY
+    const maxLeft = Math.max(0, root.scrollWidth - root.clientWidth)
+    const maxTop = Math.max(0, root.scrollHeight - root.clientHeight)
+    root.scrollLeft = Math.min(maxLeft, Math.max(0, root.scrollLeft + deltaX))
+    root.scrollTop = Math.min(maxTop, Math.max(0, root.scrollTop + deltaY))
+    if (anchor.clientX < rootRect.left || anchor.clientX > rootRect.right) {
+      this.scrollToPage(anchor.page)
+    }
   }
 
   async mount(
@@ -209,6 +396,11 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
     this.root?.removeEventListener("pointercancel", this.handlePointerCancel)
     window.removeEventListener("scroll", this.handleScroll, true)
     this.pointer = null
+    this.pinchActive = false
+    this.pinchPreview = 1
+    this.pinchContent = null
+    this.pinchAnchor = null
+    this.zoom = 1
     this.loader?.dispose()
     this.loader = null
     for (const slot of this.slots.values()) {
@@ -371,6 +563,19 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
     if (!changed) {
       return this.getSettings()
     }
+    const zoomReset =
+      previous.mode !== merged.mode || previous.fit !== merged.fit
+    if (zoomReset) {
+      this.pinchActive = false
+      this.pinchPreview = 1
+      if (this.pinchContent !== null) {
+        this.pinchContent.style.transform = ""
+        this.pinchContent.style.transformOrigin = ""
+      }
+      this.pinchContent = null
+      this.pinchAnchor = null
+      this.zoom = 1
+    }
     this.settings = merged
     this.updateAttributes()
     if (this.mounted) {
@@ -463,6 +668,28 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
     root.setAttribute("data-current-page", String(this.page))
     root.setAttribute("data-page-count", String(this.index?.pageCount ?? 0))
     root.setAttribute("data-mobile", this.isMobile() ? "true" : "false")
+    root.setAttribute("data-zoom", this.zoom.toFixed(2))
+    this.updateZoomOverflow()
+  }
+
+  private updateZoomOverflow(): void {
+    const root = this.root
+    if (root === null) {
+      return
+    }
+    const viewportWidth = Math.max(1, this.viewportSize().width)
+    let overflow = false
+    for (const slot of this.slots.values()) {
+      if (slot.image !== null && slot.image.width > viewportWidth + 1) {
+        overflow = true
+        break
+      }
+    }
+    if (overflow) {
+      root.setAttribute("data-zoom-overflow", "true")
+    } else {
+      root.removeAttribute("data-zoom-overflow")
+    }
   }
 
   private isMobile(): boolean {
@@ -710,8 +937,11 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
     spacer.setAttribute("aria-hidden", "true")
     spacer.setAttribute("focusable", "false")
     spacer.setAttribute("width", "1")
-    spacer.setAttribute("height", String(box.height))
-    spacer.setAttribute("data-placeholder-height", String(box.height))
+    spacer.setAttribute("height", String(Math.round(box.height * this.zoom)))
+    spacer.setAttribute(
+      "data-placeholder-height",
+      String(Math.round(box.height * this.zoom)),
+    )
     return spacer
   }
 
@@ -852,6 +1082,7 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
       image,
       Math.max(1, image.width * image.height * 4),
     )
+    this.updateZoomOverflow()
     this.updateCurrentMarker()
   }
 
@@ -916,10 +1147,12 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
       size.height,
       COMIC_GAP_PIXELS[this.settings.gap],
     )
-    image.width = box.width
-    image.height = box.height
-    image.setAttribute("data-rendered-width", String(box.width))
-    image.setAttribute("data-rendered-height", String(box.height))
+    const width = Math.max(1, Math.round(box.width * this.zoom))
+    const height = Math.max(1, Math.round(box.height * this.zoom))
+    image.width = width
+    image.height = height
+    image.setAttribute("data-rendered-width", String(width))
+    image.setAttribute("data-rendered-height", String(height))
   }
 
   private clearSlot(slot: PageSlot): void {
@@ -1010,11 +1243,15 @@ export class ComicReaderEngine implements ComicReaderEngineContract {
             size.height,
             COMIC_GAP_PIXELS[this.settings.gap],
           )
-          spacer.setAttribute("height", String(box.height))
-          spacer.setAttribute("data-placeholder-height", String(box.height))
+          spacer.setAttribute("height", String(Math.round(box.height * this.zoom)))
+          spacer.setAttribute(
+            "data-placeholder-height",
+            String(Math.round(box.height * this.zoom)),
+          )
         }
       }
     }
+    this.updateZoomOverflow()
     this.updateCurrentMarker()
   }
 

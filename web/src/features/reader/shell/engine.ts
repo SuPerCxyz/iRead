@@ -14,6 +14,7 @@ import {
 import {
   PdfReaderEngine,
   createPdfReaderEngine as createRealPdfReaderEngine,
+  type PdfMountOptions,
   type PdfReaderEngineOptions,
 } from "../pdf"
 import type { ReaderLocation, ReaderManifest } from "../types"
@@ -53,6 +54,7 @@ export interface ReaderEngine {
     host: HTMLElement,
     manifest: ReaderManifest,
     signal: AbortSignal,
+    options?: PdfMountOptions,
   ): Promise<void>
   unmount(): void
   restore(location: ReaderLocation): Promise<ReaderEngineResult>
@@ -61,6 +63,12 @@ export interface ReaderEngine {
   subscribeLocation(listener: (location: ReaderLocation) => void): () => void
   handleViewportChange(metrics: ReaderViewportMetrics): void
   dispose(): void
+  /** 双指整体缩放；未实现的引擎可以省略，Shell 会退化为普通点击/翻页。 */
+  getZoom?(): number
+  beginPinch?(x: number, y: number): void
+  updatePinch?(scale: number, x: number, y: number): void
+  endPinch?(commit?: boolean): void
+  resetZoom?(): void
 }
 
 const UNAVAILABLE_REASONS: Record<BookFormat, string> = {

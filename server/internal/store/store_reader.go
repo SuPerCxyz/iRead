@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	readersettings "iread/server/internal/reader/settings"
 )
 
 // ReaderSchemaVersion 是当前阅读器持久化 schema 版本。
@@ -181,10 +183,12 @@ type BookReaderOverrides struct {
 
 // PutBookReaderOverridesParams 是单书覆盖的条件写入输入。fileVersion 由 DTO 层对当前
 // book_files.sha256 校验，本表不复制全局设置，也不存 fileVersion。
+// Profile 为空时按 web 处理，兼容旧调用方；两个 profile 共享同一行 revision。
 type PutBookReaderOverridesParams struct {
 	BookID        string
 	SchemaVersion int64
 	BaseRevision  int64
+	Profile       readersettings.Profile
 	Overrides     json.RawMessage
 }
 
@@ -1077,10 +1081,17 @@ func (s *Store) GetBookReaderOverrides(ctx context.Context, bookID string) (Book
 	return record, nil
 }
 
-// PutBookReaderOverrides 以 baseRevision 做 CAS 写入稀疏覆盖。空对象是有效值，
-// 表示移除全部单书覆盖并回落到全局/内置默认；null 和未知 schema 版本被拒绝。
+// PutBookReaderOverrides 以 baseRevision 做 CAS 写入指定 profile 的稀疏覆盖。空对象是
+// 有效值，表示移除该 profile 的全部单书覆盖并回落到全局/内置默认；另一个 profile 原样保留。
+// 两个 profile 共享同一 revision；null 和未知 schema 版本被拒绝。
 func (s *Store) PutBookReaderOverrides(ctx context.Context, p PutBookReaderOverridesParams) (BookReaderOverrides, error) {
 	if !validStoreID(p.BookID) || p.BaseRevision < 0 {
+		return BookReaderOverrides{}, ErrReaderInvalidInput
+	}
+	if p.Profile == "" {
+		p.Profile = readersettings.DefaultProfile
+	}
+	if !p.Profile.Valid() {
 		return BookReaderOverrides{}, ErrReaderInvalidInput
 	}
 	if p.SchemaVersion == 0 {
@@ -1122,6 +1133,11 @@ func (s *Store) PutBookReaderOverrides(ctx context.Context, p PutBookReaderOverr
 		return BookReaderOverrides{}, ErrReaderRevisionLimit
 	}
 
+	storedOverrides, err := readersettings.MergeProfileOverrides(current.Overrides, p.Profile, overrides)
+	if err != nil {
+		return BookReaderOverrides{}, fmt.Errorf("store: 合并单书阅读设置失败: %w", err)
+	}
+
 	now := formatStoreTime(s.nowUTC())
 	nextRevision := current.Revision + 1
 	if found {
@@ -1129,7 +1145,7 @@ func (s *Store) PutBookReaderOverrides(ctx context.Context, p PutBookReaderOverr
 			UPDATE book_reader_overrides
 			SET schema_version = ?, overrides_json = ?, revision = ?, updated_at = ?
 			WHERE book_id = ? AND revision = ?`,
-			p.SchemaVersion, string(overrides), nextRevision, now, p.BookID, current.Revision)
+			p.SchemaVersion, string(storedOverrides), nextRevision, now, p.BookID, current.Revision)
 		if err != nil {
 			return BookReaderOverrides{}, fmt.Errorf("store: 更新单书阅读设置失败: %w", err)
 		}
@@ -1152,7 +1168,7 @@ func (s *Store) PutBookReaderOverrides(ctx context.Context, p PutBookReaderOverr
 			INSERT INTO book_reader_overrides (
 				book_id, schema_version, overrides_json, revision, updated_at
 			) VALUES (?, ?, ?, 1, ?)`,
-			p.BookID, p.SchemaVersion, string(overrides), now); err != nil {
+			p.BookID, p.SchemaVersion, string(storedOverrides), now); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 				// 其他进程抢先创建；释放当前事务后读取最新行作为冲突 current。
 				_ = tx.Rollback()

@@ -42,7 +42,6 @@ import {
   pdfContentPath,
   pdfLocation,
   relativeViewport,
-  viewFromEffectiveSettings,
   viewFromPdfViewState,
   type PdfAnchor,
   type PdfLayoutMode,
@@ -68,9 +67,18 @@ import {
 import { pdfPageKey, renderKeyId } from "../cache/resource-key"
 import type { ReaderCacheRuntime } from "../session/reader-cache-runtime"
 import {
+  CanvasPixelBudget,
+  DESKTOP_CANVAS_PIXEL_BUDGET,
+  MOBILE_CANVAS_PIXEL_BUDGET,
+} from "./canvas-budget"
+import {
+  computePdfRenderWindow,
+  pdfPrefetchWindowFor,
+  type PdfRenderWindow,
+} from "./render-window"
+import {
   PdfOutlineTimeoutError,
   buildPdfOutline,
-  countOutlineEntries,
   withPdfOutlineDeadline,
   type PdfOutlineEntry,
 } from "./outline"
@@ -96,11 +104,18 @@ const MAX_CANVAS_PIXELS = 8_000_000
 const OPEN_TIMEOUT_MS = 120_000
 /** 连续多久没有新的已读取字节就判定打开停滞。 */
 const OPEN_STALL_TIMEOUT_MS = 15_000
-const MOBILE_CANVAS_COUNT = 2
-const DESKTOP_CANVAS_COUNT = 4
+const MOBILE_RENDER_CONCURRENCY = 1
+const DESKTOP_RENDER_CONCURRENCY = 2
+/** 停止滚动后等待多久再安排空闲预取。 */
+const IDLE_PREFETCH_DELAY_MS = 150
+/** 空闲预取在常规窗口之外额外向前看的页数。 */
+const IDLE_PREFETCH_EXTRA_MOBILE = 3
+const IDLE_PREFETCH_EXTRA_DESKTOP = 6
 const DEFAULT_PAGE_WIDTH = 612
 const DEFAULT_PAGE_HEIGHT = 792
 const NOTICE_TIMEOUT_MS = 4_000
+/** 用户滚动停止后等待多久才允许一次锚定校正。 */
+const USER_SCROLL_SETTLE_MS = 150
 /** 目录读取上限；PDF.js 的 getOutline() 没有超时，worker 无响应时不能永久卡住面板。 */
 const OUTLINE_TIMEOUT_MS = 10_000
 
@@ -135,6 +150,14 @@ export interface PdfReaderEngineOptions {
   cache?: ReaderCacheRuntime | null
 }
 
+export interface PdfMountOptions {
+  /**
+   * Shell 已按 profile/全局/旧进度解析出的首帧视图。引擎不再自行读取
+   * 设置接口，避免先 fit-width 再恢复造成闪烁与页码回退。
+   */
+  initialView?: Partial<PdfViewSettings> | undefined
+}
+
 interface DisplaySize {
   width: number
   height: number
@@ -148,12 +171,19 @@ interface RenderedPage {
   annotationLayer: AnnotationLayer | null
   renderTask: RenderTask | null
   cacheKey: string | null
+  canvasReady: boolean
+  pixels: number
+  lastUsed: number
 }
 
 interface RenderPromiseEntry {
   scaleKey: string
   promise: Promise<void>
+  token: number
+  resolve: () => void
 }
+
+type RenderPriority = "visible" | "prefetch"
 
 interface DestinationRef {
   num: number
@@ -280,10 +310,6 @@ async function destroyLoadingTaskAndWait(
   }
 }
 
-function formatPageText(page: number, pageCount: number): string {
-  return `${page} / ${pageCount}`
-}
-
 function safeJsonKey(value: unknown): string {
   try {
     return JSON.stringify(value) ?? ""
@@ -295,8 +321,8 @@ function safeJsonKey(value: unknown): string {
 /**
  * PDF 阅读引擎。
  *
- * 生命周期与共享 shell 的 ReaderEngine 对齐；PDF 特有 UI（布局、缩放、
- * 搜索、内置目录）留在本模块内，避免把 PDF.js 细节写进 shell。
+ * 生命周期与共享 shell 的 ReaderEngine 对齐；页面、加载/错误层、搜索
+ * 命中与内置目录解析留在本模块内，工具栏与面板统一由 shell 负责。
  */
 export class PdfReaderEngine {
   readonly format: BookFormat = "pdf"
@@ -323,8 +349,6 @@ export class PdfReaderEngine {
   #root: HTMLDivElement | null = null
   #viewport: HTMLDivElement | null = null
   #pages: HTMLDivElement | null = null
-  #pageIndicator: HTMLSpanElement | null = null
-  #zoomIndicator: HTMLSpanElement | null = null
   #loading: HTMLDivElement | null = null
   #loadingText: HTMLParagraphElement | null = null
   #errorOverlay: HTMLDivElement | null = null
@@ -332,14 +356,6 @@ export class PdfReaderEngine {
   #errorMessage: HTMLParagraphElement | null = null
   #errorDetail: HTMLParagraphElement | null = null
   #errorCopy: HTMLButtonElement | null = null
-  #searchPanel: HTMLDivElement | null = null
-  #searchInput: HTMLInputElement | null = null
-  #searchStatus: HTMLParagraphElement | null = null
-  #searchResults: HTMLUListElement | null = null
-  #outlinePanel: HTMLDivElement | null = null
-  #outlineList: HTMLDivElement | null = null
-  #outlineStatus: HTMLParagraphElement | null = null
-  #layoutSelect: HTMLSelectElement | null = null
   #notice: HTMLDivElement | null = null
 
   #view: PdfViewSettings = { ...DEFAULT_PDF_VIEW }
@@ -355,7 +371,6 @@ export class PdfReaderEngine {
   #mountSignal: AbortSignal | null = null
   #readyPromise: Promise<void> = Promise.resolve()
   #lastError: PdfLoadError | null = null
-  #uiAbort: AbortController | null = null
   #resizeObserver: ResizeObserver | null = null
   #resizeFrame: number | null = null
   #scrollFrame: number | null = null
@@ -366,12 +381,8 @@ export class PdfReaderEngine {
   #activeSearchIndex = -1
   #searchNavigationEpoch: number | null = null
   #outlinePromise: Promise<PdfOutlineEntry[]> | null = null
-  /** 当前文档的目录是否已经渲染进内部面板；与“是否已调用 getOutline”解耦。 */
-  #outlineRendered = false
   /** 目录解析的取消边界，卸载/超时/切换文档时中止。 */
   #outlineAbort: AbortController | null = null
-  /** 内部面板本次打开对应的等待；关闭面板时中止。 */
-  #outlineRequest: AbortController | null = null
   #sourceUrl: URL | null = null
   #pageCache = new Map<number, PDFPageProxy>()
   #pageElements = new Map<number, HTMLElement>()
@@ -381,7 +392,27 @@ export class PdfReaderEngine {
   #rendered = new Map<number, RenderedPage>()
   #renderPromises = new Map<number, RenderPromiseEntry>()
   #renderTokens = new Map<number, number>()
+  #renderTokenSeq = 0
+  #renderUseSeq = 0
+  #renderQueue: Array<{ pageNumber: number; priority: RenderPriority }> = []
+  #activeRenders = new Map<
+    number,
+    { priority: RenderPriority; token: number }
+  >()
   #renderWindow = new Set<number>()
+  #visiblePages: number[] = []
+  #canvasBudget = new CanvasPixelBudget(DESKTOP_CANVAS_PIXEL_BUDGET)
+  #canvasBudgetCoarse: boolean | null = null
+  #layoutOffsetsFrame: number | null = null
+  #layoutOffsetsDirty = false
+  #pendingLayoutAnchor: PdfAnchor | null = null
+  #lastUserScrollAt = Number.NEGATIVE_INFINITY
+  #userScrollSettleTimer: number | null = null
+  #userScrollAnchor: PdfAnchor | null = null
+  #deferResizeForScroll = false
+  #viewChangeInFlight = false
+  #idlePrefetchTimer: number | null = null
+  #idlePrefetchHandle: number | null = null
   #lastEmittedKey = ""
   #listeners = new Set<(location: ReaderLocation) => void>()
   #stats: PdfNetworkStats = {
@@ -395,6 +426,14 @@ export class PdfReaderEngine {
   #viewportFallback = { width: 0, height: 0 }
   #mountedLayout: PdfLayoutMode | null = null
   #destinationHashes = new Map<string, string>()
+  #pinchActive = false
+  #pinchBaseScale = 1
+  #pinchPreviewFactor = 1
+  #pinchOriginX = 0
+  #pinchOriginY = 0
+  #pinchAnchor: PdfAnchor | null = null
+  #pinchLocalX = 0
+  #pinchLocalY = 0
   readonly #cache: ReaderCacheRuntime | null
 
   constructor(options: PdfReaderEngineOptions = {}) {
@@ -406,6 +445,7 @@ export class PdfReaderEngine {
     host: HTMLElement,
     manifest: ReaderManifest,
     signal: AbortSignal,
+    options: PdfMountOptions = {},
   ): Promise<void> {
     if (!isPdfManifest(manifest)) {
       throw new Error("PDF 阅读引擎只能挂载 PDF 清单。")
@@ -428,20 +468,14 @@ export class PdfReaderEngine {
       requests: [],
       fullBodyResponse: false,
     }
-    this.#view = { ...DEFAULT_PDF_VIEW }
+    this.#view = normalizeView({
+      ...DEFAULT_PDF_VIEW,
+      ...(options.initialView ?? {}),
+    })
     this.#userRotation = 0
     this.#currentPage = 1
     this.#pageCount = 0
     this.#buildDom(host)
-    this.#bindUi()
-
-    const settings = await this.#readViewSettings(manifest.bookId, signal)
-    if (mountId !== this.#mountId || signal.aborted) {
-      return
-    }
-    if (settings !== null) {
-      this.#applyView(settings)
-    }
 
     this.#readyPromise = this.#openDocument(contentHref, mountId, signal).catch(
       (error: unknown) => {
@@ -457,12 +491,12 @@ export class PdfReaderEngine {
   unmount(): void {
     this.#mountId += 1
     this.#navigationEpoch += 1
+    this.#clearPinchPreview()
     this.#readyPromise = Promise.resolve()
     this.#cancelFrame()
+    this.#cancelIdlePrefetch()
     this.#resizeObserver?.disconnect()
     this.#resizeObserver = null
-    this.#uiAbort?.abort()
-    this.#uiAbort = null
     this.#searchController?.abort()
     this.#searchController = null
     this.#searchSeq += 1
@@ -479,14 +513,18 @@ export class PdfReaderEngine {
     this.#displaySizes.clear()
     this.#pageElements.clear()
     this.#layoutOffsets = []
+    this.#layoutOffsetsDirty = false
+    this.#lastUserScrollAt = Number.NEGATIVE_INFINITY
+    this.#userScrollAnchor = null
+    this.#pendingLayoutAnchor = null
+    this.#viewChangeInFlight = false
+    this.#visiblePages = []
+    this.#canvasBudgetCoarse = null
     this.#mountedLayout = null
     this.#pageCount = 0
     this.#outlinePromise = null
-    this.#outlineRendered = false
     this.#outlineAbort?.abort()
     this.#outlineAbort = null
-    this.#outlineRequest?.abort()
-    this.#outlineRequest = null
     this.#searchMatches = []
     this.#activeSearchIndex = -1
     this.#destinationHashes.clear()
@@ -510,22 +548,12 @@ export class PdfReaderEngine {
     this.#root = null
     this.#viewport = null
     this.#pages = null
-    this.#pageIndicator = null
-    this.#zoomIndicator = null
     this.#loading = null
     this.#errorOverlay = null
     this.#errorTitle = null
     this.#errorMessage = null
     this.#errorDetail = null
     this.#errorCopy = null
-    this.#searchPanel = null
-    this.#searchInput = null
-    this.#searchStatus = null
-    this.#searchResults = null
-    this.#outlinePanel = null
-    this.#outlineList = null
-    this.#outlineStatus = null
-    this.#layoutSelect = null
     this.#notice = null
     if (this.#host !== null) {
       delete this.#host.dataset.ireadPdf
@@ -685,6 +713,174 @@ export class PdfReaderEngine {
     return { ...this.#view }
   }
 
+  getZoom(): number {
+    const base = this.#currentEffectiveScale()
+    if (!this.#pinchActive) {
+      return base
+    }
+    return clamp(base * this.#pinchPreviewFactor, PDF_MIN_SCALE, PDF_MAX_SCALE)
+  }
+
+  beginPinch(x: number, y: number): void {
+    if (this.#pdf === null || this.#pages === null) {
+      return
+    }
+    this.#pinchActive = true
+    this.#pinchBaseScale = this.#currentEffectiveScale()
+    this.#pinchPreviewFactor = 1
+    const rect = this.#pages.getBoundingClientRect()
+    this.#pinchOriginX = x - rect.left
+    this.#pinchOriginY = y - rect.top
+    const viewport = this.#viewport
+    if (viewport !== null) {
+      const viewportRect = viewport.getBoundingClientRect()
+      this.#pinchLocalX = x - viewportRect.left
+      this.#pinchLocalY = y - viewportRect.top
+      this.#pinchAnchor = this.#anchorAtPoint(
+        this.#pinchLocalX,
+        this.#pinchLocalY,
+      )
+    } else {
+      this.#pinchAnchor = null
+    }
+    const pages = this.#pages
+    pages.style.transformOrigin = `${this.#pinchOriginX}px ${this.#pinchOriginY}px`
+    pages.style.transform = "scale(1)"
+    this.#root?.setAttribute("data-pdf-pinching", "")
+  }
+
+  updatePinch(scale: number): void {
+    const pages = this.#pages
+    if (!this.#pinchActive || pages === null || !Number.isFinite(scale)) {
+      return
+    }
+    const base = Math.max(PDF_MIN_SCALE, this.#pinchBaseScale || 1)
+    const next = clamp(base * Math.max(0.01, scale), PDF_MIN_SCALE, PDF_MAX_SCALE)
+    this.#pinchPreviewFactor = next / base
+    pages.style.transform = `scale(${this.#pinchPreviewFactor})`
+  }
+
+  endPinch(commit = true): void {
+    if (!this.#pinchActive) {
+      return
+    }
+    const next = clamp(
+      this.#pinchBaseScale * this.#pinchPreviewFactor,
+      PDF_MIN_SCALE,
+      PDF_MAX_SCALE,
+    )
+    const anchor = this.#pinchAnchor
+    const localX = this.#pinchLocalX
+    const localY = this.#pinchLocalY
+    this.#clearPinchPreview()
+    if (commit) {
+      void this.setView({ zoomMode: "manual", manualScale: next }).then(() => {
+        this.#restorePinchScroll(anchor, localX, localY)
+      })
+    }
+    this.#pinchAnchor = null
+  }
+
+  resetZoom(): void {
+    this.#clearPinchPreview()
+    void this.setView({ zoomMode: "manual", manualScale: 1 })
+  }
+
+  #currentEffectiveScale(): number {
+    const display = this.#displaySizes.get(this.#currentPage)
+    if (display !== undefined && Number.isFinite(display.scale) && display.scale > 0) {
+      return display.scale
+    }
+    return this.#currentScaleForZoom > 0 ? this.#currentScaleForZoom : 1
+  }
+
+  #clearPinchPreview(): void {
+    const pages = this.#pages
+    if (pages !== null) {
+      pages.style.transform = ""
+      pages.style.transformOrigin = ""
+    }
+    this.#root?.removeAttribute("data-pdf-pinching")
+    this.#pinchActive = false
+    this.#pinchPreviewFactor = 1
+    this.#pinchBaseScale = this.#currentEffectiveScale()
+  }
+
+  #anchorAtPoint(localX: number, localY: number): PdfAnchor | null {
+    const viewport = this.#viewport
+    if (viewport === null) {
+      return null
+    }
+    if (this.#view.layoutMode === "single") {
+      const display = this.#displaySizes.get(this.#currentPage)
+      if (display === undefined || display.height <= 0) {
+        return null
+      }
+      return {
+        page: clamp(this.#currentPage, 1, this.#pageCount),
+        pageOffset: clamp(
+          (viewport.scrollTop + localY) / display.height,
+          0,
+          1,
+        ),
+      }
+    }
+    const horizontal = this.#view.layoutMode === "horizontal"
+    const point =
+      (horizontal ? viewport.scrollLeft : viewport.scrollTop) +
+      (horizontal ? localX : localY)
+    for (let index = 0; index < this.#layoutOffsets.length; index += 1) {
+      const entry = this.#layoutOffsets[index]
+      if (entry === undefined) {
+        continue
+      }
+      if (point < entry.start + entry.size || index === this.#layoutOffsets.length - 1) {
+        if (entry.size <= 0) {
+          return null
+        }
+        return {
+          page: index + 1,
+          pageOffset: clamp((point - entry.start) / entry.size, 0, 1),
+        }
+      }
+    }
+    return null
+  }
+
+  #restorePinchScroll(
+    anchor: PdfAnchor | null,
+    localX: number,
+    localY: number,
+  ): void {
+    const viewport = this.#viewport
+    if (anchor === null || viewport === null) {
+      return
+    }
+    const page = clamp(Math.floor(anchor.page), 1, this.#pageCount)
+    const offset = clamp(anchor.pageOffset, 0, 1)
+    if (this.#view.layoutMode === "single") {
+      const display = this.#displaySizes.get(page)
+      if (display === undefined || display.height <= 0) {
+        return
+      }
+      viewport.scrollTop = Math.max(0, display.height * offset - localY)
+      viewport.scrollLeft = 0
+      this.#currentPage = page
+      return
+    }
+    const entry = this.#layoutOffsets[page - 1]
+    if (entry === undefined || entry.size <= 0) {
+      return
+    }
+    if (this.#view.layoutMode === "horizontal") {
+      viewport.scrollLeft = Math.max(0, entry.start + entry.size * offset - localX)
+    } else {
+      viewport.scrollTop = Math.max(0, entry.start + entry.size * offset - localY)
+    }
+    this.#currentPage = page
+    this.#emitLocation()
+  }
+
   getNetworkStats(): PdfNetworkStats {
     return {
       ...this.#stats,
@@ -702,7 +898,6 @@ export class PdfReaderEngine {
       anchor.pageOffset,
       this.#pageCount,
       this.#relativeViewportForPage(anchor.page),
-      this.#view,
     )
   }
 
@@ -728,6 +923,7 @@ export class PdfReaderEngine {
   }
 
   async setView(patch: Partial<PdfViewSettings>): Promise<void> {
+    this.#clearPinchPreview()
     const previous = this.#view
     const next = normalizeView({ ...this.#view, ...patch })
     const layoutChanged = next.layoutMode !== previous.layoutMode
@@ -737,7 +933,16 @@ export class PdfReaderEngine {
       next.layoutMode !== previous.layoutMode
     const gapChanged = next.gap !== previous.gap
     const epoch = ++this.#navigationEpoch
-    const anchor = this.#captureAnchor()
+    const anchor = layoutChanged
+      ? {
+          // 布局切换以当前页属性为准。连续/横向滚动 rAF 可能尚未把
+          // 已滚到的页写回 scroll 坐标，直接用 scroll 推断会退回相邻页。
+          page: clamp(this.#currentPage, 1, Math.max(1, this.#pageCount)),
+          pageOffset: this.#pageOffsetFor(
+            clamp(this.#currentPage, 1, Math.max(1, this.#pageCount)),
+          ),
+        }
+      : this.#captureAnchor()
     this.#view = next
     this.#applyViewAttributes()
     if (this.#pdf === null) {
@@ -749,13 +954,23 @@ export class PdfReaderEngine {
     if (layoutChanged) {
       this.#currentPage = anchor.page
     }
-    await this.#reflow(anchor, epoch)
+    this.#viewChangeInFlight = true
+    try {
+      await this.#reflow(anchor, epoch)
+    } finally {
+      this.#viewChangeInFlight = false
+      if (this.#deferResizeForScroll) {
+        this.#deferResizeForScroll = false
+        this.#scheduleResize()
+      }
+    }
   }
 
   async rotate(degrees = 90): Promise<void> {
     if (this.#pdf === null) {
       return
     }
+    this.#clearPinchPreview()
     const epoch = ++this.#navigationEpoch
     const anchor = this.#captureAnchor()
     const nextRotation = normalizeRotation(this.#userRotation + degrees)
@@ -771,7 +986,16 @@ export class PdfReaderEngine {
       })
     }
     this.#userRotation = nextRotation
-    await this.#reflow(anchor, epoch)
+    this.#viewChangeInFlight = true
+    try {
+      await this.#reflow(anchor, epoch)
+    } finally {
+      this.#viewChangeInFlight = false
+      if (this.#deferResizeForScroll) {
+        this.#deferResizeForScroll = false
+        this.#scheduleResize()
+      }
+    }
   }
 
   clearSearch(): void {
@@ -783,8 +1007,6 @@ export class PdfReaderEngine {
     this.#searchMatches = []
     this.#activeSearchIndex = -1
     this.#clearSearchHighlights()
-    this.#renderSearchResults()
-    this.#setSearchStatus("输入关键词后开始搜索。")
   }
 
   async search(query: string, externalSignal?: AbortSignal): Promise<PdfSearchMatch[]> {
@@ -809,14 +1031,11 @@ export class PdfReaderEngine {
         if (cancelled()) return []
         const items = textContent.items.filter((item): item is typeof item & { str: string; hasEOL?: boolean } => "str" in item)
         matches.push(...findPdfPageMatches(items, normalized, pageNumber, SEARCH_LIMIT - matches.length))
-        this.#setSearchStatus(`正在搜索第 ${pageNumber} / ${this.#pageCount} 页…`)
         if (!this.#rendered.has(pageNumber) && !this.#renderPromises.has(pageNumber)) page.cleanup()
         if (matches.length >= SEARCH_LIMIT) break
       }
       if (cancelled()) return []
       this.#searchMatches = matches
-      this.#renderSearchResults()
-      this.#setSearchStatus(matches.length ? `找到 ${matches.length} 处${matches.length >= SEARCH_LIMIT ? `（已达到 ${SEARCH_LIMIT} 条上限）` : ""}。` : `没有找到“${normalized}”。`)
       this.#applySearchHighlights()
       return matches
     } finally {
@@ -832,7 +1051,7 @@ export class PdfReaderEngine {
   /**
    * 读取 PDF 内置目录。
    *
-   * - 结果在同一文档内缓存，Shell 与引擎内部面板共享，不会重复请求 worker；
+   * - 结果在同一文档内缓存，Shell 目录面板直接消费，不会重复请求 worker；
    * - 有超时与取消边界，不会因为 PDF.js 无响应而永久 pending；
    * - 调用方取消（关闭面板）只影响本次等待，不破坏缓存；
    * - 超时或失败会清空缓存，下一次打开可以重试。
@@ -907,89 +1126,6 @@ export class PdfReaderEngine {
     root.setAttribute("aria-label", "PDF 阅读器")
     root.dataset.pdfReady = "false"
 
-    const toolbar = createElement("div", "iread-pdf__toolbar")
-    toolbar.setAttribute("role", "toolbar")
-    toolbar.setAttribute("aria-label", "PDF 工具栏")
-
-    const pageNav = createElement("div", "iread-pdf__group")
-    const previous = createButton("上一页", "‹")
-    previous.addEventListener("click", () => {
-      void this.advance("previous").then((result) => {
-        if (!result.ok) this.#showNotice(result.reason)
-      })
-    })
-    const indicator = createElement("span", "iread-pdf__page-indicator", "1 / –")
-    indicator.dataset.pdfPage = "1"
-    indicator.dataset.pdfPageCount = "0"
-    this.#pageIndicator = indicator
-    const next = createButton("下一页", "›")
-    next.addEventListener("click", () => {
-      void this.advance("next").then((result) => {
-        if (!result.ok) this.#showNotice(result.reason)
-      })
-    })
-    pageNav.append(previous, indicator, next)
-
-    const zoomGroup = createElement("div", "iread-pdf__group")
-    const zoomOut = createButton("缩小", "−")
-    zoomOut.addEventListener("click", () => {
-      void this.#stepManualScale(1 / 1.15)
-    })
-    const zoom = createElement("span", "iread-pdf__zoom-indicator", "100%")
-    this.#zoomIndicator = zoom
-    const zoomIn = createButton("放大", "+")
-    zoomIn.addEventListener("click", () => {
-      void this.#stepManualScale(1.15)
-    })
-    const fitWidth = createButton("适应宽度", "宽")
-    fitWidth.addEventListener("click", () => {
-      void this.setZoomMode("fit-width")
-    })
-    const fitPage = createButton("适应页面", "页")
-    fitPage.addEventListener("click", () => {
-      void this.setZoomMode("fit-page")
-    })
-    const rotate = createButton("旋转 90 度", "↻")
-    rotate.addEventListener("click", () => {
-      void this.rotate(90)
-    })
-    zoomGroup.append(zoomOut, zoom, zoomIn, fitWidth, fitPage, rotate)
-
-    const layoutGroup = createElement("div", "iread-pdf__group")
-    const layoutSelect = createElement("select", "iread-pdf__select")
-    layoutSelect.setAttribute("aria-label", "页面布局")
-    const layoutLabels: Record<PdfLayoutMode, string> = {
-      single: "单页",
-      continuous: "连续",
-      horizontal: "横向",
-    }
-    for (const mode of PDF_LAYOUT_MODES) {
-      const option = createElement("option", undefined, layoutLabels[mode])
-      option.value = mode
-      layoutSelect.append(option)
-    }
-    layoutSelect.addEventListener("change", () => {
-      void this.setLayout(layoutSelect.value as PdfLayoutMode)
-    })
-    this.#layoutSelect = layoutSelect
-    layoutGroup.append(layoutSelect)
-
-    const toolGroup = createElement("div", "iread-pdf__group iread-pdf__group--end")
-    const searchButton = createButton("搜索 PDF", "搜索")
-    searchButton.addEventListener("click", () => {
-      this.#toggleSearchPanel()
-    })
-    const outlineButton = createButton("PDF 内置目录", "目录")
-    outlineButton.addEventListener("click", () => {
-      void this.#toggleOutlinePanel()
-    })
-    toolGroup.append(searchButton, outlineButton)
-
-    const status = createElement("div", "iread-pdf__toolbar-status")
-    status.setAttribute("role", "status")
-    status.setAttribute("aria-live", "polite")
-    toolbar.append(pageNav, zoomGroup, layoutGroup, toolGroup, status)
-
     const viewport = createElement("div", "iread-pdf__viewport")
     viewport.tabIndex = 0
     this.#viewport = viewport
@@ -1009,15 +1145,13 @@ export class PdfReaderEngine {
     this.#loading = loading
     this.#loadingText = loadingText
 
-    const searchPanel = this.#buildSearchPanel()
-    const outlinePanel = this.#buildOutlinePanel()
     const errorOverlay = this.#buildErrorOverlay()
     const notice = createElement("div", "iread-pdf__notice")
     notice.setAttribute("role", "status")
     notice.setAttribute("aria-live", "polite")
     this.#notice = notice
 
-    root.append(toolbar, viewport, searchPanel, outlinePanel, loading, errorOverlay, notice)
+    root.append(viewport, loading, errorOverlay, notice)
     host.append(root)
     this.#root = root
     this.#applyViewAttributes()
@@ -1030,86 +1164,29 @@ export class PdfReaderEngine {
     observer.observe(viewport)
     this.#resizeObserver = observer
 
+    const markUserScroll = () => {
+      this.#markUserScroll()
+    }
+    viewport.addEventListener("wheel", markUserScroll, { passive: true })
+    viewport.addEventListener("touchstart", markUserScroll, { passive: true })
+    viewport.addEventListener("touchmove", markUserScroll, { passive: true })
+    viewport.addEventListener("pointerdown", markUserScroll, { passive: true })
+    viewport.addEventListener("keydown", markUserScroll)
     viewport.addEventListener(
       "scroll",
       () => {
+        if (this.#isUserScrolling()) {
+          // 惯性滚动持续期间继续顺延，避免在用户尚未停下时校正。
+          this.#lastUserScrollAt = performance.now()
+          this.#userScrollAnchor = this.#captureAnchor()
+          this.#scheduleUserScrollSettle()
+        }
+        this.#cancelIdlePrefetch()
         this.#scheduleScrollUpdate()
       },
       { passive: true },
     )
 
-  }
-
-  #buildSearchPanel(): HTMLDivElement {
-    const panel = createElement("div", "iread-pdf__search")
-    panel.hidden = true
-    const header = createElement("div", "iread-pdf__panel-header")
-    const title = createElement("h2", "iread-pdf__panel-title", "搜索")
-    const close = createButton("关闭搜索", "关闭", "iread-pdf__button iread-pdf__button--quiet")
-    close.addEventListener("click", () => {
-      panel.hidden = true
-    })
-    header.append(title, close)
-
-    const form = createElement("form", "iread-pdf__search-form")
-    const input = createElement("input", "iread-pdf__search-input")
-    input.type = "search"
-    input.placeholder = "在 PDF 中搜索"
-    input.setAttribute("aria-label", "在 PDF 中搜索")
-    input.autocomplete = "off"
-    input.addEventListener("input", () => this.clearSearch())
-    this.#searchInput = input
-    const submit = createButton("执行搜索", "搜索", "iread-pdf__button iread-pdf__button--primary")
-    submit.type = "submit"
-    form.append(input, submit)
-    form.addEventListener("submit", (event) => {
-      event.preventDefault()
-      void this.#runSearchFromUi()
-    })
-
-    const controls = createElement("div", "iread-pdf__search-controls")
-    const previous = createButton("上一个搜索结果", "上一个")
-    previous.addEventListener("click", () => {
-      void this.#activateSearchResult(this.#activeSearchIndex - 1)
-    })
-    const next = createButton("下一个搜索结果", "下一个")
-    next.addEventListener("click", () => {
-      void this.#activateSearchResult(this.#activeSearchIndex + 1)
-    })
-    controls.append(previous, next)
-
-    const status = createElement("p", "iread-pdf__search-status", "输入关键词后开始搜索。")
-    status.setAttribute("role", "status")
-    status.setAttribute("aria-live", "polite")
-    this.#searchStatus = status
-    const results = createElement("ul", "iread-pdf__search-results")
-    this.#searchResults = results
-
-    panel.append(header, form, controls, status, results)
-    this.#searchPanel = panel
-    return panel
-  }
-
-  #buildOutlinePanel(): HTMLDivElement {
-    const panel = createElement("div", "iread-pdf__outline")
-    panel.hidden = true
-    panel.dataset.outlineState = "idle"
-    const header = createElement("div", "iread-pdf__panel-header")
-    const title = createElement("h2", "iread-pdf__panel-title", "PDF 内置目录")
-    const close = createButton("关闭 PDF 目录", "关闭", "iread-pdf__button iread-pdf__button--quiet")
-    close.addEventListener("click", () => {
-      this.#closeOutlinePanel()
-    })
-    header.append(title, close)
-    const status = createElement("p", "iread-pdf__outline-status", "")
-    status.setAttribute("role", "status")
-    status.setAttribute("aria-live", "polite")
-    this.#outlineStatus = status
-    const list = createElement("div", "iread-pdf__outline-list")
-    this.#outlineList = list
-    panel.append(header, status, list)
-    this.#outlinePanel = panel
-    return panel
   }
 
   #buildErrorOverlay(): HTMLDivElement {
@@ -1185,40 +1262,6 @@ export class PdfReaderEngine {
     return overlay
   }
 
-  #bindUi(): void {
-    this.#uiAbort?.abort()
-    const controller = new AbortController()
-    this.#uiAbort = controller
-    const root = this.#root
-    if (root === null) {
-      return
-    }
-    root.addEventListener(
-      "keydown",
-      (event: KeyboardEvent) => {
-        if (event.defaultPrevented || event.isComposing) {
-          return
-        }
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
-          event.preventDefault()
-          this.#openSearchPanel()
-          return
-        }
-        if (event.key === "Escape") {
-          const searchOpen = this.#searchPanel?.hidden === false
-          const outlineOpen = this.#outlinePanel?.hidden === false
-          if (searchOpen || outlineOpen) {
-            event.preventDefault()
-            event.stopPropagation()
-            if (this.#searchPanel !== null) this.#searchPanel.hidden = true
-            this.#closeOutlinePanel()
-          }
-        }
-      },
-      { signal: controller.signal },
-    )
-  }
-
   #applyViewAttributes(): void {
     const root = this.#root
     if (root === null) {
@@ -1227,80 +1270,12 @@ export class PdfReaderEngine {
     root.dataset.layout = this.#view.layoutMode
     root.dataset.zoom = this.#view.zoomMode
     root.dataset.background = this.#view.background
-    root.dataset.toolbar = this.#view.toolbarVisible ? "visible" : "hidden"
-    if (this.#layoutSelect !== null) {
-      this.#layoutSelect.value = this.#view.layoutMode
-    }
+    root.dataset.gap = this.#view.gap
     const pages = this.#pages
     if (pages !== null) {
       pages.dataset.layout = this.#view.layoutMode
     }
     this.#updateZoomIndicator()
-  }
-
-  #applyView(settings: PdfViewSettings): void {
-    const changed =
-      settings.layoutMode !== this.#view.layoutMode ||
-      settings.zoomMode !== this.#view.zoomMode ||
-      settings.manualScale !== this.#view.manualScale ||
-      settings.gap !== this.#view.gap ||
-      settings.background !== this.#view.background ||
-      settings.toolbarVisible !== this.#view.toolbarVisible
-    this.#view = settings
-    this.#applyViewAttributes()
-    if (changed && this.#pdf !== null) {
-      void this.#reflow(this.#captureAnchor())
-    }
-  }
-
-  async #readViewSettings(
-    bookId: string,
-    signal: AbortSignal,
-  ): Promise<PdfViewSettings | null> {
-    const request = async (path: string): Promise<unknown> => {
-      try {
-        const response = await fetch(path, {
-          method: "GET",
-          credentials: "same-origin",
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-          signal,
-        })
-        if (!response.ok) {
-          return null
-        }
-        const payload: unknown = await response.json()
-        if (!isRecord(payload) || !isRecord(payload.data)) {
-          return null
-        }
-        return payload.data
-      } catch {
-        return null
-      }
-    }
-    const [globalValue, overrides] = await Promise.all([
-      request("/api/v1/settings/reader"),
-      request(`/api/v1/books/${encodeURIComponent(bookId)}/reader-overrides`),
-    ])
-    if (signal.aborted) {
-      return null
-    }
-    let view = normalizeView(null)
-    const globalPartial = isRecord(globalValue)
-      ? viewFromEffectiveSettings(globalValue.value)
-      : null
-    if (globalPartial !== null) {
-      view = normalizeView({ ...view, ...globalPartial })
-    }
-    if (isRecord(overrides)) {
-      const overridePartial =
-        viewFromEffectiveSettings(overrides.effectiveValues) ??
-        viewFromEffectiveSettings(overrides.overrides)
-      if (overridePartial !== null) {
-        view = normalizeView({ ...view, ...overridePartial })
-      }
-    }
-    return view
   }
 
   // 内部：打开文档与 Range
@@ -1425,11 +1400,14 @@ export class PdfReaderEngine {
     this.#pageCount = pdf.numPages
     this.#currentPage = 1
     this.#outlinePromise = null
-    this.#outlineRendered = false
     this.#outlineAbort?.abort()
     this.#outlineAbort = null
-    this.#outlineRequest?.abort()
-    this.#outlineRequest = null
+    // 先量第 1 页，未测量页直接沿用同一 scale=1 尺寸。这样连续布局
+    // 首帧的占位高度与真实 DOM 一致，不会用 612×792 累计出数千像素误差。
+    await this.#ensurePageMetrics(1)
+    if (mountId !== this.#mountId || signal.aborted) {
+      return
+    }
     this.#clearOpenTransientState()
     if (this.#root !== null) {
       this.#root.dataset.pdfReady = "true"
@@ -1442,10 +1420,6 @@ export class PdfReaderEngine {
     this.#updateIndicator()
     this.#updateZoomIndicator()
     this.#rebuildLayoutDom()
-    await this.#ensurePageMetrics(1)
-    if (mountId !== this.#mountId) {
-      return
-    }
     this.#updateAllPageSizes()
     this.#computeLayoutOffsets()
     this.#scrollToAnchor({ page: 1, pageOffset: 0 })
@@ -1555,7 +1529,8 @@ export class PdfReaderEngine {
     if (signal === null || signal.aborted) {
       return
     }
-    await this.mount(host, manifest, signal)
+    const initialView = { ...this.#view }
+    await this.mount(host, manifest, signal, { initialView })
   }
 
   #setLoadingText(text: string): void {
@@ -1576,11 +1551,23 @@ export class PdfReaderEngine {
     }
     const pageElement = createElement("div", "iread-pdf__page")
     pageElement.dataset.pdfPage = String(pageNumber)
+    pageElement.dataset.state = "idle"
     pageElement.setAttribute("aria-label", `第 ${pageNumber} 页`)
     const canvasWrap = createElement("div", "iread-pdf__page-canvas")
     const canvas = createElement("canvas")
     canvas.setAttribute("role", "presentation")
+    // 未渲染页不要保留浏览器默认 300×150 的后备存储；857 页会白占约 150MB。
+    canvas.width = 0
+    canvas.height = 0
     canvasWrap.append(canvas)
+    const placeholder = createElement("div", "iread-pdf__page-placeholder")
+    placeholder.setAttribute("aria-hidden", "true")
+    const placeholderChip = createElement(
+      "span",
+      "iread-pdf__page-placeholder-chip",
+      `第 ${pageNumber} 页 · 待渲染`,
+    )
+    placeholder.append(placeholderChip)
     const textLayer = createElement("div", "textLayer")
     const annotationLayer = createElement("div", "annotationLayer")
     const fallback = createElement("div", "iread-pdf__page-error")
@@ -1593,12 +1580,60 @@ export class PdfReaderEngine {
     )
     retry.addEventListener("click", () => {
       this.#disposeRendered(pageNumber)
-      void this.#renderPage(pageNumber)
+      void this.#renderPage(pageNumber, "visible")
     })
     fallback.append(fallbackText, retry)
-    pageElement.append(canvasWrap, textLayer, annotationLayer, fallback)
+    pageElement.append(
+      canvasWrap,
+      placeholder,
+      textLayer,
+      annotationLayer,
+      fallback,
+    )
     this.#pageElements.set(pageNumber, pageElement)
     return pageElement
+  }
+
+  /** 更新页面状态与占位层文案；canvas-ready 由绘制完成单独控制。 */
+  #setPageState(
+    pageNumber: number,
+    state: "idle" | "prefetching" | "rendering" | "ready" | "error",
+  ): void {
+    const element = this.#pageElements.get(pageNumber)
+    if (element === undefined) {
+      return
+    }
+    element.dataset.state = state
+    if (state === "ready") {
+      element.dataset.canvasReady = "true"
+    } else if (
+      state === "idle" ||
+      state === "error" ||
+      state === "prefetching"
+    ) {
+      delete element.dataset.canvasReady
+    }
+    const chip = element.querySelector<HTMLElement>(
+      ".iread-pdf__page-placeholder-chip",
+    )
+    if (chip !== null) {
+      chip.textContent =
+        state === "rendering"
+          ? `第 ${pageNumber} 页 · 正在渲染…`
+          : state === "prefetching"
+            ? `第 ${pageNumber} 页 · 预取中…`
+            : state === "error"
+              ? `第 ${pageNumber} 页 · 无法显示`
+              : `第 ${pageNumber} 页 · 待渲染`
+    }
+  }
+
+  /** canvas 画完就隐藏占位，不等文字层与注释层。 */
+  #markCanvasReady(pageNumber: number): void {
+    const element = this.#pageElements.get(pageNumber)
+    if (element !== undefined) {
+      element.dataset.canvasReady = "true"
+    }
   }
 
   #updatePageElementSize(pageNumber: number): void {
@@ -1634,6 +1669,14 @@ export class PdfReaderEngine {
     const cached = this.#pageMetrics.get(pageNumber)
     if (cached !== undefined) {
       return cached
+    }
+    // 第 1 页在打开时必定已测量；其他页尚未测量时先按同一尺寸占位。
+    // 混合尺寸页真实尺寸到达后再更新 offsets，并保留当前锚点。
+    if (pageNumber !== 1) {
+      const firstPage = this.#pageMetrics.get(1)
+      if (firstPage !== undefined) {
+        return firstPage
+      }
     }
     const totalRotation = normalizeRotation(this.#userRotation)
     const swapped = totalRotation % 180 !== 0
@@ -1715,18 +1758,160 @@ export class PdfReaderEngine {
       return
     }
     const gap = PDF_GAP_PIXELS[this.#view.gap]
-    let cursor = 0
+    const horizontal = this.#view.layoutMode === "horizontal"
+    const pages = this.#pages
+    // 视口 padding 也属于滚动坐标；offsets 从页面容器实际起点开始，
+    // 跳页后目标页顶部才能与视口顶部对齐。
+    let cursor = pages === null ? 0 : horizontal ? pages.offsetLeft : pages.offsetTop
     for (let pageNumber = 1; pageNumber <= this.#pageCount; pageNumber += 1) {
       const display = this.#displaySizes.get(pageNumber)
       const metrics = this.#metricsFor(pageNumber)
       const size = this.#scaleFor(metrics)
       const width = display?.width ?? metrics.width * size
       const height = display?.height ?? metrics.height * size
-      const dimension =
-        this.#view.layoutMode === "horizontal" ? width : height
+      const dimension = horizontal ? width : height
       this.#layoutOffsets.push({ start: cursor, size: dimension })
       cursor += dimension + gap
     }
+  }
+
+  #isUserScrolling(): boolean {
+    return (
+      performance.now() - this.#lastUserScrollAt < USER_SCROLL_SETTLE_MS
+    )
+  }
+
+  #markUserScroll(): void {
+    if (this.#pdf === null) {
+      return
+    }
+    this.#lastUserScrollAt = performance.now()
+    this.#userScrollAnchor = this.#captureAnchor()
+    this.#scheduleUserScrollSettle()
+  }
+
+  #scheduleUserScrollSettle(): void {
+    if (this.#userScrollSettleTimer !== null) {
+      window.clearTimeout(this.#userScrollSettleTimer)
+    }
+    this.#userScrollSettleTimer = window.setTimeout(() => {
+      this.#userScrollSettleTimer = null
+      if (this.#pdf === null) {
+        return
+      }
+      if (this.#isUserScrolling()) {
+        this.#scheduleUserScrollSettle()
+        return
+      }
+      this.#settleUserScroll()
+    }, USER_SCROLL_SETTLE_MS)
+  }
+
+  /** 用户停止滚动后最多校正一次；期间不写 scrollTop。 */
+  #settleUserScroll(): void {
+    const anchor = this.#userScrollAnchor ?? this.#captureAnchor()
+    this.#userScrollAnchor = null
+    if (this.#layoutOffsetsDirty) {
+      this.#computeLayoutOffsets()
+      this.#layoutOffsetsDirty = false
+      this.#scrollToAnchor(anchor)
+    }
+    if (this.#deferResizeForScroll) {
+      this.#deferResizeForScroll = false
+      this.#scheduleResize()
+    }
+    this.#refreshVisible()
+    this.#emitLocation()
+  }
+
+  /**
+   * 真实页尺寸到达后不必每页同步重算 857 个偏移；合并到下一帧，
+   * 并按页内相对位置修正滚动，避免当前阅读位置跳动。
+   */
+  #scheduleLayoutOffsetsUpdate(): void {
+    if (this.#view.layoutMode === "single") {
+      return
+    }
+    this.#layoutOffsetsDirty = true
+    if (this.#layoutOffsetsFrame !== null) {
+      return
+    }
+    const mountId = this.#mountId
+    this.#layoutOffsetsFrame = window.requestAnimationFrame(() => {
+      this.#layoutOffsetsFrame = null
+      if (
+        mountId !== this.#mountId ||
+        this.#pdf === null ||
+        this.#viewport === null
+      ) {
+        return
+      }
+      const viewport = this.#viewport
+      const horizontal = this.#view.layoutMode === "horizontal"
+      const pendingAnchor = this.#pendingLayoutAnchor
+      this.#pendingLayoutAnchor = null
+      const anchorPage = pendingAnchor?.page ?? this.#pageFromScroll()
+      const anchorOffset =
+        pendingAnchor?.pageOffset ?? this.#pageOffsetFor(anchorPage)
+      this.#computeLayoutOffsets()
+      if (this.#isUserScrolling()) {
+        // 浏览器原生 scroll anchoring 已由 CSS 关闭；这里也绝不在用户
+        // 滚动期间写 scrollTop，等停止 150ms 后统一校正一次。
+        this.#userScrollAnchor =
+          this.#userScrollAnchor ?? {
+            page: anchorPage,
+            pageOffset: anchorOffset,
+          }
+        this.#scheduleUserScrollSettle()
+      } else {
+        const entry = this.#layoutOffsets[anchorPage - 1]
+        if (entry !== undefined) {
+          const target = Math.max(0, entry.start + entry.size * anchorOffset)
+          const current = horizontal ? viewport.scrollLeft : viewport.scrollTop
+          if (Math.abs(target - current) > 1) {
+            if (horizontal) {
+              viewport.scrollLeft = target
+            } else {
+              viewport.scrollTop = target
+            }
+          }
+        }
+        this.#layoutOffsetsDirty = false
+      }
+      this.#refreshVisible()
+      this.#emitLocation()
+    })
+  }
+
+  #coarsePointer(): boolean {
+    if (typeof window === "undefined") {
+      return false
+    }
+    if (typeof window.matchMedia === "function") {
+      if (window.matchMedia("(pointer: coarse)").matches) {
+        return true
+      }
+      if (window.matchMedia("(max-width: 767px)").matches) {
+        return true
+      }
+    }
+    return false
+  }
+
+  #renderConcurrency(): number {
+    return this.#coarsePointer()
+      ? MOBILE_RENDER_CONCURRENCY
+      : DESKTOP_RENDER_CONCURRENCY
+  }
+
+  #applyCanvasBudgetTier(coarse: boolean): void {
+    if (this.#canvasBudgetCoarse === coarse) {
+      return
+    }
+    this.#canvasBudgetCoarse = coarse
+    this.#canvasBudget.setMaxPixels(
+      coarse ? MOBILE_CANVAS_PIXEL_BUDGET : DESKTOP_CANVAS_PIXEL_BUDGET,
+    )
   }
 
   #captureAnchor(): PdfAnchor {
@@ -1747,8 +1932,9 @@ export class PdfReaderEngine {
     }
     const horizontal = this.#view.layoutMode === "horizontal"
     const scroll = horizontal ? viewport.scrollLeft : viewport.scrollTop
-    const size = horizontal ? viewport.clientWidth : viewport.clientHeight
-    const target = scroll + (horizontal ? size * 0.5 : 1)
+    // 横向与连续布局都用视口起点所在页作为当前页。用视口中点判断会
+    // 在连续→横向切换后把相邻页误当当前页，破坏“切换布局不翻页”。
+    const target = scroll + 1
     let low = 0
     let high = this.#layoutOffsets.length - 1
     let result = 0
@@ -1793,6 +1979,9 @@ export class PdfReaderEngine {
     if (viewport === null || this.#pdf === null) {
       return
     }
+    // 显式初始化/跳页/布局切换优先于此前为尺寸变化排队的自动锚点，
+    // 避免迟到的旧页 render 把刚跳到的页拉回。
+    this.#pendingLayoutAnchor = null
     const page = clamp(Math.floor(anchor.page), 1, this.#pageCount)
     const offset = clamp(anchor.pageOffset, 0, 1)
     if (this.#view.layoutMode === "single") {
@@ -1893,7 +2082,8 @@ export class PdfReaderEngine {
     if (anchor.page !== this.#currentPage) {
       this.#transport?.cancelPending()
     }
-    this.#disposeAllRenders()
+    // 不在重排开始时丢弃所有已渲染页：滚动/缩放期间保留现有 canvas，
+    // 仅由 #refreshVisible 按新 scaleKey 替换失效页，避免整屏闪烁。
     await this.#ensurePageMetrics(anchor.page)
     if (epoch !== this.#navigationEpoch) {
       return
@@ -1916,6 +2106,20 @@ export class PdfReaderEngine {
       if (this.#pdf === null) {
         return
       }
+      if (this.#isUserScrolling()) {
+        // visualViewport 在滚动中也会触发尺寸通知；滚动期间不做全量重排，
+        // 等用户停下后再按锚点恢复一次。
+        this.#deferResizeForScroll = true
+        this.#scheduleUserScrollSettle()
+        return
+      }
+      if (this.#viewChangeInFlight) {
+        // 布局/缩放切换尚未完成时，resize 不能按新布局读取旧 scrollLeft，
+        // 否则横向页会误判成第 1 页；等切换完成后再重排。
+        this.#deferResizeForScroll = true
+        return
+      }
+      this.#clearPinchPreview()
       const anchor = this.#captureAnchor()
       void this.#reflow(anchor)
     })
@@ -1947,6 +2151,117 @@ export class PdfReaderEngine {
       window.cancelAnimationFrame(this.#scrollFrame)
       this.#scrollFrame = null
     }
+    if (this.#layoutOffsetsFrame !== null) {
+      window.cancelAnimationFrame(this.#layoutOffsetsFrame)
+      this.#layoutOffsetsFrame = null
+    }
+    if (this.#userScrollSettleTimer !== null) {
+      window.clearTimeout(this.#userScrollSettleTimer)
+      this.#userScrollSettleTimer = null
+    }
+    this.#userScrollAnchor = null
+    this.#pendingLayoutAnchor = null
+    this.#deferResizeForScroll = false
+    this.#layoutOffsetsDirty = false
+    this.#viewChangeInFlight = false
+  }
+
+  #cancelIdlePrefetch(): void {
+    if (this.#idlePrefetchTimer !== null) {
+      window.clearTimeout(this.#idlePrefetchTimer)
+      this.#idlePrefetchTimer = null
+    }
+    if (this.#idlePrefetchHandle !== null) {
+      const idleWindow = window as Window & {
+        cancelIdleCallback?: (handle: number) => void
+      }
+      idleWindow.cancelIdleCallback?.(this.#idlePrefetchHandle)
+      this.#idlePrefetchHandle = null
+    }
+  }
+
+  /** 滚动停止 150ms 后，用浏览器空闲时间再向前预取一批更远的页。 */
+  #scheduleIdlePrefetch(): void {
+    this.#cancelIdlePrefetch()
+    if (this.#pdf === null || this.#pageCount < 1) {
+      return
+    }
+    this.#idlePrefetchTimer = window.setTimeout(() => {
+      this.#idlePrefetchTimer = null
+      const idleWindow = window as Window & {
+        requestIdleCallback?: (
+          callback: () => void,
+          options?: { timeout: number },
+        ) => number
+      }
+      if (typeof idleWindow.requestIdleCallback === "function") {
+        this.#idlePrefetchHandle = idleWindow.requestIdleCallback(
+          () => {
+            this.#idlePrefetchHandle = null
+            this.#runIdlePrefetch()
+          },
+          { timeout: 1_000 },
+        )
+        return
+      }
+      this.#idlePrefetchTimer = window.setTimeout(() => {
+        this.#idlePrefetchTimer = null
+        this.#runIdlePrefetch()
+      }, 0)
+    }, IDLE_PREFETCH_DELAY_MS)
+  }
+
+  #runIdlePrefetch(): void {
+    if (
+      this.#pdf === null ||
+      this.#pageCount < 1 ||
+      this.#renderQueue.length > 0 ||
+      this.#activeRenders.size >= this.#renderConcurrency()
+    ) {
+      return
+    }
+    const coarse = this.#coarsePointer()
+    const base =
+      this.#view.layoutMode === "single"
+        ? { before: 1, after: 1 }
+        : pdfPrefetchWindowFor(coarse)
+    const extra = coarse
+      ? IDLE_PREFETCH_EXTRA_MOBILE
+      : IDLE_PREFETCH_EXTRA_DESKTOP
+    const visible =
+      this.#visiblePages.length > 0 ? this.#visiblePages : [this.#currentPage]
+    const window = computePdfRenderWindow(
+      { visible, pageCount: this.#pageCount, coarse },
+      { before: base.before, after: base.after + extra },
+    )
+    let projectedPixels = this.#canvasBudget.totalPixels
+    const targets: number[] = []
+    for (const pageNumber of window.prefetch) {
+      if (
+        this.#rendered.has(pageNumber) ||
+        this.#renderPromises.has(pageNumber) ||
+        this.#activeRenders.has(pageNumber) ||
+        this.#pageElements.get(pageNumber)?.dataset.state === "error"
+      ) {
+        continue
+      }
+      const estimated = this.#estimatedCanvasPixels(pageNumber)
+      if (
+        projectedPixels + estimated >
+        this.#canvasBudget.maxPixels
+      ) {
+        continue
+      }
+      projectedPixels += estimated
+      targets.push(pageNumber)
+    }
+    if (targets.length === 0) {
+      return
+    }
+    for (const pageNumber of targets) {
+      this.#renderWindow.add(pageNumber)
+      void this.#renderPage(pageNumber, "prefetch")
+    }
   }
 
   // 内部：虚拟渲染
@@ -1955,60 +2270,192 @@ export class PdfReaderEngine {
     if (this.#pdf === null || this.#pages === null) {
       return
     }
+    this.#cancelIdlePrefetch()
     const page = clamp(Math.floor(this.#currentPage), 1, this.#pageCount)
     this.#currentPage = page
+    const coarse = this.#coarsePointer()
+    this.#applyCanvasBudgetTier(coarse)
+
+    let visible: number[]
     if (this.#view.layoutMode === "single") {
       this.#rebuildLayoutDom()
-      const windowPages = this.#renderWindowFor(page)
-      this.#renderWindow = new Set(windowPages)
-      for (const pageNumber of windowPages) {
-        void this.#renderPage(pageNumber)
+      visible = [page]
+    } else {
+      const { first, last } = this.#visiblePageRange()
+      if (last >= first) {
+        visible = []
+        for (let pageNumber = first; pageNumber <= last; pageNumber += 1) {
+          visible.push(pageNumber)
+        }
+        this.#currentPage =
+          this.#view.layoutMode === "horizontal" ? this.#pageFromScroll() : first
+      } else {
+        visible = [page]
       }
-      this.#disposeOutsideWindow()
-      this.#updateIndicator()
-      return
     }
+    this.#visiblePages = visible
 
-    const { first, last } = this.#visiblePageRange()
-    if (last >= first) {
-      this.#currentPage = this.#view.layoutMode === "horizontal"
-        ? this.#pageFromScroll()
-        : first
-    }
-    const windowPages = this.#renderWindowFor(this.#currentPage, first, last)
-    this.#renderWindow = new Set(windowPages)
-    for (const pageNumber of windowPages) {
-      void this.#renderPage(pageNumber)
-    }
-    this.#disposeOutsideWindow()
+    const prefetch =
+      this.#view.layoutMode === "single"
+        ? { before: 1, after: 1 }
+        : pdfPrefetchWindowFor(coarse)
+    const window = computePdfRenderWindow(
+      { visible, pageCount: this.#pageCount, coarse },
+      prefetch,
+    )
+    this.#applyRenderWindow(window)
     this.#updateIndicator()
   }
 
-  #renderWindowFor(
-    anchorPage: number,
-    firstVisible = anchorPage,
-    lastVisible = anchorPage,
-  ): number[] {
-    const coarse = window.matchMedia("(pointer: coarse)").matches
-    const limit = coarse ? MOBILE_CANVAS_COUNT : DESKTOP_CANVAS_COUNT
-    const result = new Set<number>()
-    for (let page = firstVisible; page <= lastVisible; page += 1) {
-      result.add(clamp(page, 1, this.#pageCount))
-      if (result.size >= limit) break
+  #applyRenderWindow(window: PdfRenderWindow): void {
+    this.#renderWindow = new Set(window.retain)
+    const desired = this.#renderWindow
+
+    this.#renderQueue = this.#renderQueue.filter((entry) =>
+      desired.has(entry.pageNumber),
+    )
+    for (const [pageNumber] of this.#activeRenders) {
+      if (!desired.has(pageNumber) && !this.#shouldKeepRendered(pageNumber)) {
+        this.#cancelPageRender(pageNumber)
+      }
     }
-    if (result.size === 0) {
-      result.add(clamp(anchorPage, 1, this.#pageCount))
+    for (const pageNumber of [...this.#renderPromises.keys()]) {
+      if (!desired.has(pageNumber) && !this.#shouldKeepRendered(pageNumber)) {
+        this.#cancelPageRender(pageNumber)
+      }
     }
-    if (result.size < limit) {
-      result.add(clamp(anchorPage + 1, 1, this.#pageCount))
+
+    // 先让窗口内页面成为“最近使用”，再按预算淘汰窗口外的旧页。
+    // prefetch 从远到近 touch，保证预算不足时先淘汰更远的候选页。
+    for (const pageNumber of [...window.prefetch].reverse()) {
+      const record = this.#rendered.get(pageNumber)
+      if (record !== undefined) {
+        this.#touchRendered(pageNumber, record)
+      }
     }
-    if (result.size < limit) {
-      result.add(clamp(anchorPage - 1, 1, this.#pageCount))
+    for (const pageNumber of window.visible) {
+      const record = this.#rendered.get(pageNumber)
+      if (record !== undefined) {
+        this.#touchRendered(pageNumber, record)
+      }
     }
-    if (result.size < limit && limit >= DESKTOP_CANVAS_COUNT) {
-      result.add(clamp(anchorPage + 2, 1, this.#pageCount))
+    this.#enforceCanvasBudget()
+
+    for (const pageNumber of window.visible) {
+      const element = this.#pageElements.get(pageNumber)
+      if (
+        element?.dataset.state === "prefetching" &&
+        element.dataset.canvasReady !== "true"
+      ) {
+        this.#setPageState(pageNumber, "rendering")
+      }
     }
-    return [...result].sort((left, right) => left - right)
+
+    for (const pageNumber of window.visible) {
+      if (this.#pageElements.get(pageNumber)?.dataset.state === "error") {
+        continue
+      }
+      void this.#renderPage(pageNumber, "visible")
+    }
+    // 只把预算装得下的最近 prefetch 页送进队列；更远页保持 idle，
+    // 避免每帧“渲染→淘汰→再渲染”的空转。
+    let projectedPixels = this.#canvasBudget.totalPixels
+    for (const pageNumber of window.visible) {
+      if (this.#pageElements.get(pageNumber)?.dataset.state === "error") {
+        continue
+      }
+      const rendered = this.#rendered.get(pageNumber)
+      if (
+        rendered?.scaleKey === this.#renderKey(pageNumber) ||
+        this.#renderPromises.has(pageNumber)
+      ) {
+        continue
+      }
+      projectedPixels += this.#estimatedCanvasPixels(pageNumber)
+    }
+    for (const pageNumber of window.prefetch) {
+      if (this.#pageElements.get(pageNumber)?.dataset.state === "error") {
+        continue
+      }
+      const rendered = this.#rendered.get(pageNumber)
+      if (rendered?.scaleKey === this.#renderKey(pageNumber)) {
+        continue
+      }
+      if (
+        this.#renderPromises.has(pageNumber) ||
+        this.#activeRenders.has(pageNumber)
+      ) {
+        continue
+      }
+      const estimated = this.#estimatedCanvasPixels(pageNumber)
+      if (
+        projectedPixels + estimated >
+        this.#canvasBudget.maxPixels
+      ) {
+        continue
+      }
+      projectedPixels += estimated
+      void this.#renderPage(pageNumber, "prefetch")
+    }
+    this.#pumpRenderQueue()
+    this.#scheduleIdlePrefetch()
+  }
+
+  #enforceCanvasBudget(): void {
+    // 只保护当前可见页；后台正在补文字层/注释层的页如果超出预算，
+    // 允许按 lastUsed 淘汰，避免快速滚动时 canvas 像素越积越多。
+    const protectedPages = new Set(this.#visiblePages)
+    for (const pageNumber of this.#canvasBudget.evict(protectedPages)) {
+      this.#disposeRendered(pageNumber)
+    }
+  }
+
+  #shouldKeepRendered(pageNumber: number): boolean {
+    return this.#rendered.get(pageNumber)?.canvasReady === true
+  }
+
+  #estimatedCanvasPixels(pageNumber: number): number {
+    const metrics = this.#metricsFor(pageNumber)
+    const scale = this.#scaleFor(metrics)
+    const width = Math.max(1, metrics.width * scale)
+    const height = Math.max(1, metrics.height * scale)
+    const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+    const pixels = width * height * dpr * dpr
+    const outputScale =
+      pixels <= MAX_CANVAS_PIXELS
+        ? dpr
+        : clamp(Math.sqrt(MAX_CANVAS_PIXELS / (width * height)), 0.1, dpr)
+    return (
+      Math.max(1, Math.floor(width * outputScale)) *
+      Math.max(1, Math.floor(height * outputScale))
+    )
+  }
+
+  #canStartPrefetch(pageNumber: number): boolean {
+    const current = this.#canvasBudget.pixelsFor(pageNumber)
+    return (
+      this.#canvasBudget.totalPixels -
+        current +
+        this.#estimatedCanvasPixels(pageNumber) <=
+      this.#canvasBudget.maxPixels
+    )
+  }
+
+  #cancelPageRender(pageNumber: number): void {
+    this.#renderTokens.set(pageNumber, ++this.#renderTokenSeq)
+    const pending = this.#renderPromises.get(pageNumber)
+    if (pending !== undefined) {
+      this.#renderPromises.delete(pageNumber)
+      pending.resolve()
+    }
+    this.#renderQueue = this.#renderQueue.filter(
+      (entry) => entry.pageNumber !== pageNumber,
+    )
+    if (this.#rendered.has(pageNumber)) {
+      this.#disposeRendered(pageNumber)
+    } else if (!this.#activeRenders.has(pageNumber)) {
+      this.#setPageState(pageNumber, "idle")
+    }
   }
 
   #visiblePageRange(): { first: number; last: number } {
@@ -2064,14 +2511,23 @@ export class PdfReaderEngine {
     })
   }
 
-  #renderPage(pageNumber: number): Promise<void> {
+  #renderPage(
+    pageNumber: number,
+    priority: RenderPriority = "visible",
+  ): Promise<void> {
     const key = this.#renderKey(pageNumber)
     const pending = this.#renderPromises.get(pageNumber)
     if (pending !== undefined && pending.scaleKey === key) {
+      this.#promoteQueuedRender(pageNumber, priority)
       return pending.promise
     }
     const rendered = this.#rendered.get(pageNumber)
-    if (rendered !== undefined && rendered.scaleKey === key) {
+    if (
+      rendered !== undefined &&
+      rendered.scaleKey === key &&
+      rendered.canvasReady
+    ) {
+      this.#touchRendered(pageNumber, rendered)
       if (this.#manifest !== null) {
         this.#cache?.scheduler.recordCacheHit(
           pdfPageKey(
@@ -2084,23 +2540,158 @@ export class PdfReaderEngine {
       }
       return Promise.resolve()
     }
+    if (pending !== undefined) {
+      // 缩放/旋转后旧请求的 scale 已失效；先结束旧 promise，避免调用方悬挂。
+      this.#renderPromises.delete(pageNumber)
+      pending.resolve()
+    }
     this.#disposeRendered(pageNumber)
-    const token = (this.#renderTokens.get(pageNumber) ?? 0) + 1
+    const token = ++this.#renderTokenSeq
     this.#renderTokens.set(pageNumber, token)
-    const promise = this.#doRenderPage(pageNumber, key, token).finally(() => {
-      const current = this.#renderPromises.get(pageNumber)
-      if (current?.promise === promise) {
-        this.#renderPromises.delete(pageNumber)
-      }
+    let resolve: () => void = () => undefined
+    const promise = new Promise<void>((done) => {
+      resolve = done
     })
-    this.#renderPromises.set(pageNumber, { scaleKey: key, promise })
+    this.#renderPromises.set(pageNumber, {
+      scaleKey: key,
+      promise,
+      token,
+      resolve,
+    })
+    this.#enqueueRender(pageNumber, priority)
+    this.#pumpRenderQueue()
     return promise
+  }
+
+  #promoteQueuedRender(
+    pageNumber: number,
+    priority: RenderPriority,
+  ): void {
+    if (priority !== "visible") {
+      return
+    }
+    const index = this.#renderQueue.findIndex(
+      (entry) => entry.pageNumber === pageNumber,
+    )
+    if (index < 0 || this.#renderQueue[index].priority === "visible") {
+      return
+    }
+    const [entry] = this.#renderQueue.splice(index, 1)
+    let insertAt = 0
+    while (
+      insertAt < this.#renderQueue.length &&
+      this.#renderQueue[insertAt].priority === "visible"
+    ) {
+      insertAt += 1
+    }
+    this.#renderQueue.splice(insertAt, 0, {
+      pageNumber: entry.pageNumber,
+      priority: "visible",
+    })
+    this.#pumpRenderQueue()
+  }
+
+  #enqueueRender(pageNumber: number, priority: RenderPriority): void {
+    const existing = this.#renderQueue.findIndex(
+      (entry) => entry.pageNumber === pageNumber,
+    )
+    if (existing >= 0) {
+      if (
+        priority === "visible" &&
+        this.#renderQueue[existing].priority !== "visible"
+      ) {
+        this.#renderQueue.splice(existing, 1)
+      } else {
+        return
+      }
+    }
+    if (priority === "prefetch") {
+      this.#renderQueue.push({ pageNumber, priority })
+      return
+    }
+    let insertAt = 0
+    while (
+      insertAt < this.#renderQueue.length &&
+      this.#renderQueue[insertAt].priority === "visible"
+    ) {
+      insertAt += 1
+    }
+    this.#renderQueue.splice(insertAt, 0, { pageNumber, priority })
+  }
+
+  #pumpRenderQueue(): void {
+    const concurrency = this.#renderConcurrency()
+    while (this.#activeRenders.size < concurrency) {
+      const entry = this.#renderQueue.shift()
+      if (entry === undefined) {
+        break
+      }
+      const { pageNumber } = entry
+      if (!this.#renderWindow.has(pageNumber)) {
+        const stale = this.#renderPromises.get(pageNumber)
+        if (stale !== undefined) {
+          this.#renderPromises.delete(pageNumber)
+          stale.resolve()
+        }
+        this.#setPageState(pageNumber, "idle")
+        continue
+      }
+      const pending = this.#renderPromises.get(pageNumber)
+      if (pending === undefined) {
+        continue
+      }
+      if (entry.priority === "prefetch" && !this.#canStartPrefetch(pageNumber)) {
+        this.#renderPromises.delete(pageNumber)
+        pending.resolve()
+        if (!this.#rendered.has(pageNumber)) {
+          this.#setPageState(pageNumber, "idle")
+        }
+        continue
+      }
+      this.#activeRenders.set(pageNumber, {
+        priority: entry.priority,
+        token: pending.token,
+      })
+      this.#startPageRender(
+        pageNumber,
+        pending.token,
+        entry.priority,
+      )
+    }
+  }
+
+  #startPageRender(
+    pageNumber: number,
+    token: number,
+    priority: RenderPriority,
+  ): void {
+    void this.#doRenderPage(pageNumber, token, priority)
+      .catch(() => undefined)
+      .finally(() => {
+        const active = this.#activeRenders.get(pageNumber)
+        if (active !== undefined && active.token === token) {
+          this.#activeRenders.delete(pageNumber)
+        }
+        const current = this.#renderPromises.get(pageNumber)
+        if (current !== undefined && current.token === token) {
+          this.#renderPromises.delete(pageNumber)
+          current.resolve()
+        }
+        this.#enforceCanvasBudget()
+        this.#pumpRenderQueue()
+        if (
+          this.#renderQueue.length === 0 &&
+          this.#activeRenders.size === 0
+        ) {
+          this.#scheduleIdlePrefetch()
+        }
+      })
   }
 
   async #doRenderPage(
     pageNumber: number,
-    key: string,
     token: number,
+    priority: RenderPriority,
   ): Promise<void> {
     const pageElement = this.#pageElement(pageNumber)
     const fallback = pageElement.querySelector<HTMLElement>(
@@ -2109,13 +2700,29 @@ export class PdfReaderEngine {
     const fallbackText = pageElement.querySelector<HTMLElement>(
       ".iread-pdf__page-error-text",
     )
-    pageElement.dataset.state = "rendering"
+    if (!this.#renderWindow.has(pageNumber)) {
+      this.#setPageState(pageNumber, "idle")
+      return
+    }
+    const renderState =
+      priority === "visible" || this.#visiblePages.includes(pageNumber)
+        ? "rendering"
+        : "prefetching"
+    this.#setPageState(pageNumber, renderState)
     if (fallback !== null) {
       fallback.hidden = true
     }
     try {
       const page = await this.#getPage(pageNumber)
       if (token !== this.#renderTokens.get(pageNumber)) {
+        if (!this.#renderPromises.has(pageNumber)) {
+          this.#setPageState(pageNumber, "idle")
+        }
+        return
+      }
+      // 拿到页面后、改写 canvas 前再确认一次；连续/横向布局同样适用。
+      if (!this.#renderWindow.has(pageNumber)) {
+        this.#setPageState(pageNumber, "idle")
         return
       }
       const totalRotation = normalizeRotation(page.rotate + this.#userRotation)
@@ -2128,9 +2735,30 @@ export class PdfReaderEngine {
       const baseViewport = page.getViewport({ scale: 1, rotation: totalRotation })
       metrics.width = baseViewport.width
       metrics.height = baseViewport.height
+      const previousMetrics = this.#pageMetrics.get(pageNumber)
       this.#pageMetrics.set(pageNumber, metrics)
+      const sizeChanged =
+        previousMetrics === undefined ||
+        previousMetrics.width !== metrics.width ||
+        previousMetrics.height !== metrics.height ||
+        previousMetrics.totalRotation !== metrics.totalRotation
+      // 在真正改 DOM 高度前记录用户当前看到的位置；等 rAF 重算 offsets
+      // 后按这个锚点校正，混合尺寸页也不会把阅读位置推走。
+      if (sizeChanged && this.#pendingLayoutAnchor === null) {
+        this.#pendingLayoutAnchor = this.#captureAnchor()
+      }
       const scale = this.#scaleFor(metrics)
+      // 真实页面尺寸可能改变 fit-width 比例；用实际 scale 修正渲染键，
+      // 否则下一次 refresh 会把同一页误判为新 scale 再渲染一次。
+      const effectiveKey = `${scale.toFixed(4)}:${totalRotation}`
+      const pendingEntry = this.#renderPromises.get(pageNumber)
+      if (pendingEntry?.token === token) {
+        pendingEntry.scaleKey = effectiveKey
+      }
       this.#updatePageElementSize(pageNumber)
+      if (sizeChanged) {
+        this.#scheduleLayoutOffsetsUpdate()
+      }
       const viewport = page.getViewport({
         scale,
         rotation: totalRotation,
@@ -2163,24 +2791,30 @@ export class PdfReaderEngine {
         background: "white",
       })
       const record: RenderedPage = {
-        scaleKey: key,
+        scaleKey: effectiveKey,
         page,
         textLayer: null,
         annotationLayer: null,
         renderTask,
         cacheKey: null,
+        canvasReady: false,
+        pixels: canvas.width * canvas.height,
+        lastUsed: 0,
       }
       this.#rendered.set(pageNumber, record)
       await renderTask.promise
-      if (
-        token !== this.#renderTokens.get(pageNumber) ||
-        !this.#renderWindow.has(pageNumber) && this.#view.layoutMode === "single"
-      ) {
+      if (token !== this.#renderTokens.get(pageNumber)) {
         if (this.#rendered.get(pageNumber) === record) {
           this.#disposeRendered(pageNumber)
+        } else if (!this.#renderPromises.has(pageNumber)) {
+          this.#setPageState(pageNumber, "idle")
         }
         return
       }
+      // 画布一画完就撤掉占位；文字层/注释层仍可能在继续。
+      record.canvasReady = true
+      this.#markCanvasReady(pageNumber)
+      this.#touchRendered(pageNumber, record)
 
       const textContainer = pageElement.querySelector<HTMLElement>(".textLayer")
       if (textContainer !== null) {
@@ -2201,7 +2835,10 @@ export class PdfReaderEngine {
           }
         }
       }
-      if (token !== this.#renderTokens.get(pageNumber)) {
+      if (
+        token !== this.#renderTokens.get(pageNumber) ||
+        this.#rendered.get(pageNumber) !== record
+      ) {
         return
       }
 
@@ -2240,17 +2877,20 @@ export class PdfReaderEngine {
           annotationContainer.replaceChildren()
         }
       }
-      if (token !== this.#renderTokens.get(pageNumber)) {
+      if (
+        token !== this.#renderTokens.get(pageNumber) ||
+        this.#rendered.get(pageNumber) !== record
+      ) {
         return
       }
-      pageElement.dataset.state = "ready"
+      this.#setPageState(pageNumber, "ready")
       this.#applySearchHighlightsToPage(pageNumber)
       this.#currentScaleForZoom = scale
       this.#updateZoomIndicator()
       const cache = this.#cache
       const manifest = this.#manifest
       if (cache !== null && manifest !== null) {
-        const cacheKey = this.#renderCacheKey(pageNumber, key)
+        const cacheKey = this.#renderCacheKey(pageNumber, effectiveKey)
         record.cacheKey = cacheKey
         cache.render.register(
           cacheKey,
@@ -2265,21 +2905,36 @@ export class PdfReaderEngine {
             release: () => {
               if (this.#rendered.get(pageNumber) === record) {
                 this.#disposeRendered(pageNumber, true)
+                if (
+                  this.#renderWindow.has(pageNumber) &&
+                  !this.#renderPromises.has(pageNumber)
+                ) {
+                  void this.#renderPage(
+                    pageNumber,
+                    this.#visiblePages.includes(pageNumber)
+                      ? "visible"
+                      : "prefetch",
+                  )
+                }
               }
             },
           },
         )
       }
     } catch (error) {
-      if (
-        isAbortError(error) ||
-        isRenderingCancelled(error) ||
-        token !== this.#renderTokens.get(pageNumber)
-      ) {
+      if (token !== this.#renderTokens.get(pageNumber)) {
+        if (!this.#renderPromises.has(pageNumber)) {
+          this.#setPageState(pageNumber, "idle")
+        }
+        return
+      }
+      if (isAbortError(error) || isRenderingCancelled(error)) {
+        this.#disposeRendered(pageNumber)
+        this.#setPageState(pageNumber, "idle")
         return
       }
       this.#disposeRendered(pageNumber)
-      pageElement.dataset.state = "error"
+      this.#setPageState(pageNumber, "error")
       if (fallbackText !== null) {
         fallbackText.textContent = `第 ${pageNumber} 页暂时无法显示；其余页面仍可继续阅读。`
       }
@@ -2302,12 +2957,22 @@ export class PdfReaderEngine {
     )
   }
 
+  #touchRendered(pageNumber: number, record: RenderedPage): void {
+    if (!record.canvasReady) {
+      return
+    }
+    record.lastUsed = ++this.#renderUseSeq
+    record.pixels = Math.max(0, record.pixels)
+    this.#canvasBudget.touch(pageNumber, record.pixels)
+  }
+
   #disposeRendered(pageNumber: number, skipRenderCache = false): void {
     const record = this.#rendered.get(pageNumber)
     if (record === undefined) {
       return
     }
     this.#rendered.delete(pageNumber)
+    this.#canvasBudget.remove(pageNumber)
     const cacheKey = record.cacheKey
     record.cacheKey = null
     if (!skipRenderCache && cacheKey !== null) {
@@ -2339,8 +3004,9 @@ export class PdfReaderEngine {
       text?.replaceChildren()
       const annotation = element.querySelector<HTMLElement>(".annotationLayer")
       annotation?.replaceChildren()
+      delete element.dataset.canvasReady
       if (element.dataset.state !== "error") {
-        element.dataset.state = "idle"
+        this.#setPageState(pageNumber, "idle")
       }
     }
     if (this.#searchController === null) {
@@ -2352,21 +3018,36 @@ export class PdfReaderEngine {
     }
   }
 
-  #disposeOutsideWindow(): void {
-    for (const pageNumber of [...this.#rendered.keys()]) {
-      if (!this.#renderWindow.has(pageNumber)) {
-        this.#disposeRendered(pageNumber)
-      }
-    }
-  }
-
   #disposeAllRenders(): void {
+    if (this.#layoutOffsetsFrame !== null) {
+      window.cancelAnimationFrame(this.#layoutOffsetsFrame)
+      this.#layoutOffsetsFrame = null
+    }
+    const pages = new Set<number>([
+      ...this.#rendered.keys(),
+      ...this.#renderPromises.keys(),
+      ...this.#renderTokens.keys(),
+    ])
+    for (const pageNumber of pages) {
+      // 用全局递增 token 作废旧请求；地图本身不清空，避免新旧 token 碰撞。
+      this.#renderTokens.set(pageNumber, ++this.#renderTokenSeq)
+    }
     for (const pageNumber of [...this.#rendered.keys()]) {
       this.#disposeRendered(pageNumber)
     }
+    for (const pageNumber of [...this.#renderPromises.keys()]) {
+      const pending = this.#renderPromises.get(pageNumber)
+      this.#renderPromises.delete(pageNumber)
+      pending?.resolve()
+      this.#setPageState(pageNumber, "idle")
+    }
     this.#renderPromises.clear()
-    this.#renderTokens.clear()
+    this.#renderQueue = []
+    this.#activeRenders.clear()
     this.#renderWindow.clear()
+    this.#visiblePages = []
+    this.#canvasBudget.clear()
+    this.#cancelIdlePrefetch()
   }
 
   // 内部：目录、链接与位置
@@ -2475,80 +3156,13 @@ export class PdfReaderEngine {
     }
   }
 
-  // 内部：搜索 UI 与高亮
-
-  #openSearchPanel(): void {
-    const panel = this.#searchPanel
-    if (panel === null) {
-      return
-    }
-    if (this.#outlinePanel !== null) {
-      this.#closeOutlinePanel()
-    }
-    panel.hidden = false
-    this.#searchInput?.focus()
-    this.#searchInput?.select()
-  }
-
-  #toggleSearchPanel(): void {
-    const panel = this.#searchPanel
-    if (panel === null) {
-      return
-    }
-    if (panel.hidden) {
-      this.#openSearchPanel()
-    } else {
-      panel.hidden = true
-      this.clearSearch()
-    }
-  }
-
-  async #runSearchFromUi(): Promise<void> {
-    const query = this.#searchInput?.value ?? ""
-    const matches = await this.search(query)
-    if (matches.length > 0) {
-      await this.#activateSearchResult(0)
-    }
-  }
-
-  #setSearchStatus(text: string): void {
-    if (this.#searchStatus !== null) {
-      this.#searchStatus.textContent = text
-    }
-  }
-
-  #renderSearchResults(): void {
-    const list = this.#searchResults
-    if (list === null) {
-      return
-    }
-    list.replaceChildren()
-    for (let index = 0; index < this.#searchMatches.length; index += 1) {
-      const match = this.#searchMatches[index]
-      const item = createElement("li", "iread-pdf__search-result")
-      const button = createButton(
-        `跳转到搜索结果：第 ${match.page} 页`,
-        `第 ${match.page} 页 · ${match.snippet}`,
-        "iread-pdf__search-result-button",
-      )
-      button.dataset.resultIndex = String(index)
-      button.addEventListener("click", () => {
-        void this.#activateSearchResult(index)
-      })
-      if (index === this.#activeSearchIndex) {
-        button.dataset.active = "true"
-      }
-      item.append(button)
-      list.append(item)
-    }
-  }
+  // 内部：搜索高亮
 
   async activateSearchMatch(index: number): Promise<number> {
     if (!this.#searchMatches.length) return -1
     const sequence = this.#searchSeq
     const wrapped = ((index % this.#searchMatches.length) + this.#searchMatches.length) % this.#searchMatches.length
     this.#activeSearchIndex = wrapped
-    this.#renderSearchResults()
     const match = this.#searchMatches[wrapped]
     const epoch = ++this.#navigationEpoch
     this.#searchNavigationEpoch = epoch
@@ -2563,8 +3177,6 @@ export class PdfReaderEngine {
     if (this.#searchNavigationEpoch === epoch) this.#searchNavigationEpoch = null
     return wrapped
   }
-
-  async #activateSearchResult(index: number): Promise<void> { await this.activateSearchMatch(index) }
 
   #applySearchHighlights(): void {
     for (const pageNumber of this.#rendered.keys()) this.#applySearchHighlightsToPage(pageNumber)
@@ -2609,153 +3221,11 @@ export class PdfReaderEngine {
     }
   }
 
-  // 内部：内置目录 UI
-
-  async #toggleOutlinePanel(): Promise<void> {
-    const panel = this.#outlinePanel
-    if (panel === null) {
-      return
-    }
-    if (!panel.hidden) {
-      this.#closeOutlinePanel()
-      return
-    }
-    if (this.#searchPanel !== null) {
-      this.#searchPanel.hidden = true
-    }
-    panel.hidden = false
-    // 面板内容可能已经由上一次打开渲染；直接复用，不能停留在
-    // “正在读取目录…”的占位状态（Shell 预加载只缓存结果，不负责渲染面板）。
-    if (this.#outlineRendered) {
-      return
-    }
-    const mountId = this.#mountId
-    const controller = new AbortController()
-    this.#outlineRequest?.abort()
-    this.#outlineRequest = controller
-    this.#setOutlineState("loading", "正在读取目录…")
-    let entries: PdfOutlineEntry[] = []
-    let failed = false
-    try {
-      entries = await this.getOutline({ signal: controller.signal })
-    } catch {
-      if (controller.signal.aborted) {
-        return
-      }
-      failed = true
-    } finally {
-      if (this.#outlineRequest === controller) {
-        this.#outlineRequest = null
-      }
-    }
-    // 迟到响应不得覆盖已关闭的面板或新文档。
-    if (
-      controller.signal.aborted ||
-      mountId !== this.#mountId ||
-      panel.hidden
-    ) {
-      return
-    }
-    this.#renderOutline(entries)
-    if (failed) {
-      // 失败与“没有目录”使用同一句提示，但保留状态标记便于诊断/测试。
-      panel.dataset.outlineState = "error"
-    }
-    // 失败时不锁定，重新打开面板可以再试一次。
-    this.#outlineRendered = !failed
-  }
-
-  #closeOutlinePanel(): void {
-    if (this.#outlinePanel !== null) {
-      this.#outlinePanel.hidden = true
-    }
-    this.#outlineRequest?.abort()
-    this.#outlineRequest = null
-  }
-
-  #setOutlineState(
-    state: "idle" | "loading" | "ready" | "empty" | "error",
-    text?: string,
-  ): void {
-    if (this.#outlinePanel !== null) {
-      this.#outlinePanel.dataset.outlineState = state
-    }
-    if (this.#outlineStatus !== null && text !== undefined) {
-      this.#outlineStatus.textContent = text
-    }
-  }
-
-  #renderOutline(entries: PdfOutlineEntry[]): void {
-    const list = this.#outlineList
-    if (list === null) {
-      return
-    }
-    list.replaceChildren()
-    if (entries.length === 0) {
-      this.#setOutlineState("empty", "这份 PDF 没有内置目录。")
-      return
-    }
-    this.#setOutlineState(
-      "ready",
-      `共 ${countOutlineEntries(entries)} 个目录项。`,
-    )
-    const renderLevel = (
-      values: PdfOutlineEntry[],
-      container: HTMLElement,
-    ): void => {
-      for (const entry of values) {
-        const row = createElement("div", "iread-pdf__outline-item")
-        row.dataset.level = String(entry.level)
-        if (entry.page !== null) {
-          const button = createButton(
-            `跳转到目录：${entry.title}`,
-            entry.title,
-            "iread-pdf__outline-button",
-          )
-          button.addEventListener("click", () => {
-            void this.#goToPage(entry.page ?? 1, 0, false)
-          })
-          row.append(button)
-        } else {
-          const label = createElement(
-            "span",
-            "iread-pdf__outline-label",
-            entry.title,
-          )
-          row.append(label)
-        }
-        if (entry.url !== null) {
-          const safe = safeExternalUrl(entry.url)
-          if (safe !== null) {
-            const link = createElement("a", "iread-pdf__outline-link", "外部链接")
-            link.href = safe
-            link.target = "_blank"
-            link.rel = "noopener noreferrer"
-            row.append(link)
-          }
-        }
-        container.append(row)
-        if (entry.children.length > 0) {
-          const childContainer = createElement("div", "iread-pdf__outline-children")
-          renderLevel(entry.children, childContainer)
-          container.append(childContainer)
-        }
-      }
-    }
-    renderLevel(entries, list)
-  }
-
   // 内部：状态与指示器
 
   #updateIndicator(): void {
     const page = Math.max(1, this.#currentPage)
     const count = this.#pageCount
-    if (this.#pageIndicator !== null) {
-      this.#pageIndicator.textContent =
-        count > 0 ? formatPageText(page, count) : "1 / –"
-      this.#pageIndicator.dataset.pdfPage = String(page)
-      this.#pageIndicator.dataset.pdfPageCount = String(count)
-    }
     if (this.#root !== null) {
       this.#root.dataset.pdfPage = String(page)
       this.#root.dataset.pdfPageCount = String(count)
@@ -2765,28 +3235,9 @@ export class PdfReaderEngine {
   #updateZoomIndicator(): void {
     const scale =
       this.#displaySizes.get(this.#currentPage)?.scale ?? this.#currentScaleForZoom
-    const percent = Math.round(scale * 100)
-    if (this.#zoomIndicator !== null) {
-      this.#zoomIndicator.textContent = `${percent}%`
-    }
     if (this.#root !== null) {
       this.#root.dataset.pdfScale = scale.toFixed(4)
     }
-  }
-
-  async #stepManualScale(factor: number): Promise<void> {
-    if (this.#pdf === null) {
-      return
-    }
-    const current =
-      this.#displaySizes.get(this.#currentPage)?.scale ??
-      this.#currentScaleForZoom
-    const next = clamp(
-      current * factor,
-      PDF_MIN_SCALE,
-      PDF_MAX_SCALE,
-    )
-    await this.setManualScale(next)
   }
 
   #showNotice(message: string): void {
@@ -2852,7 +3303,6 @@ export class PdfReaderEngine {
       anchor.pageOffset,
       this.#pageCount,
       relative,
-      this.#view,
     )
     const payload = location.locatorPayload as PdfPageLocatorPayload
     if (this.#root !== null) {

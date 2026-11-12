@@ -1000,6 +1000,8 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 .iread-book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  grid-auto-rows: 1fr;
+  align-items: stretch;
   gap: calc(var(--spacing) * 4);
 }
 
@@ -1025,7 +1027,7 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .iread-book-cover__fallback {
@@ -1108,11 +1110,37 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 .iread-book-card {
+  position: relative;
+  display: flex;
+  height: 100%;
   min-width: 0;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 3);
+}
+
+.iread-book-card__cover-link {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-lg);
+}
+
+.iread-book-card__cover-link:focus-visible,
+.iread-book-card__link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+
+.iread-book-card:hover .iread-book-cover {
+  border-color: var(--ring);
 }
 
 .iread-book-card__link {
   display: flex;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
   flex-direction: column;
   gap: calc(var(--spacing) * 3);
   color: inherit;
@@ -1120,24 +1148,18 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   border-radius: var(--radius-lg);
 }
 
-.iread-book-card__link:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 4px;
-}
-
-.iread-book-card__link:hover .iread-book-cover {
-  border-color: var(--ring);
-}
-
 .iread-book-card__body {
   display: flex;
+  min-height: 0;
   min-width: 0;
+  flex: 1;
   flex-direction: column;
   gap: calc(var(--spacing) * 2);
 }
 
 .iread-book-card__title {
   display: -webkit-box;
+  min-height: 2.8em;
   overflow: hidden;
   margin: 0;
   -webkit-box-orient: vertical;
@@ -1149,6 +1171,7 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 .iread-book-card__authors {
+  min-height: 1.4em;
   overflow: hidden;
   margin: 0;
   color: var(--muted-foreground);
@@ -1160,12 +1183,16 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-book-card__badges {
   display: flex;
+  min-height: calc(var(--spacing) * 5);
   flex-wrap: wrap;
+  align-items: center;
   gap: calc(var(--spacing) * 1);
+  margin-top: auto;
 }
 
 .iread-book-card__progress {
   display: flex;
+  min-height: calc(var(--spacing) * 5);
   align-items: center;
   gap: calc(var(--spacing) * 2);
   color: var(--muted-foreground);
@@ -1174,6 +1201,48 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-book-card__progress-text {
   flex-shrink: 0;
+}
+
+.iread-book-card__actions {
+  position: absolute;
+  top: calc(var(--spacing) * 2);
+  right: calc(var(--spacing) * 2);
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.iread-book-card:hover .iread-book-card__actions,
+.iread-book-card:focus-within .iread-book-card__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .iread-book-card__actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.iread-book-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+}
+
+.iread-book-actions--overlay {
+  gap: calc(var(--spacing) * 1);
+}
+
+.iread-book-actions--overlay .iread-book-actions__button {
+  box-shadow: 0 1px 4px rgb(0 0 0 / 18%);
+}
+
+.iread-book-actions__label {
+  white-space: nowrap;
 }
 
 .iread-home__content {
@@ -1222,6 +1291,21 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 .iread-home__continue-cover {
   grid-row: span 2;
   min-width: 0;
+}
+
+.iread-home__continue-cover-link,
+.iread-home__continue-info-link {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+}
+
+.iread-home__continue-cover-link:focus-visible,
+.iread-home__continue-info-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
 }
 
 .iread-home__continue-header,
@@ -1292,6 +1376,27 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   padding-block: calc(var(--spacing) * 4);
 }
 
+.iread-book__topbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  min-width: 0;
+}
+
+.iread-book__topbar-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  margin-inline-start: auto;
+}
+
+.iread-book__back-button {
+  flex-shrink: 0;
+}
+
 .iread-book__layout {
   display: grid;
   grid-template-columns: minmax(0, 16rem) minmax(0, 1fr);
@@ -1312,6 +1417,8 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-book__info {
   display: flex;
+  width: 100%;
+  max-width: 52rem;
   min-width: 0;
   flex-direction: column;
   gap: calc(var(--spacing) * 4);
@@ -1372,9 +1479,33 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 .iread-book__facts {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 5);
+  margin: 0;
+}
+
+.iread-book__facts-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+}
+
+.iread-book__facts-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.iread-book__facts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-  gap: calc(var(--spacing) * 3);
+  width: 100%;
+  max-width: 40rem;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
   margin: 0;
 }
 
@@ -1385,15 +1516,31 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   gap: calc(var(--spacing) * 1);
 }
 
+.iread-book__fact--wide {
+  grid-column: 1 / -1;
+}
+
 .iread-book__fact dt {
   color: var(--muted-foreground);
   font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .iread-book__fact dd {
   margin: 0;
   font-size: 0.875rem;
+  line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .iread-book__facts-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .iread-book__fact--wide {
+    grid-column: auto;
+  }
 }
 
 .iread-book__status-content {
@@ -1419,9 +1566,7 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 .iread-book__status-note {
   color: var(--muted-foreground);
   font-size: 0.8125rem;
-}
-
-.iread-book-task {
+}.iread-book-task {
   display: flex;
   width: 100%;
   flex-direction: column;
@@ -1450,9 +1595,34 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   font-size: 0.75rem;
 }
 
-.iread-book__back {
+.iread-book-title-dialog__form {
   display: flex;
-  margin-top: calc(var(--spacing) * 2);
+  flex-direction: column;
+  gap: calc(var(--spacing) * 4);
+}
+
+.iread-book-title-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 1.5);
+}
+
+.iread-book-title-dialog__field label {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.iread-book-title-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(var(--spacing) * 2);
+  font-size: 0.75rem;
+}
+
+.iread-book-title-dialog__count {
+  color: var(--muted-foreground);
 }
 
 .iread-upload {
@@ -1662,8 +1832,17 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
     font-size: 1.5rem;
   }
 
-  .iread-book__facts {
+  .iread-book__facts-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .iread-book__fact--wide {
+    grid-column: auto;
+  }
+
+  .iread-book__back-label,
+  .iread-book-actions__label {
+    display: none;
   }
 
   .iread-upload__dialog {
@@ -1736,7 +1915,8 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 .iread-reader-shell__bottombar {
-  flex-wrap: wrap;
+  min-width: 0;
+  flex-wrap: nowrap;
   padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
   padding-bottom: calc(
     calc(var(--spacing) * 2) + env(safe-area-inset-bottom)
@@ -1912,6 +2092,17 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.5;
+  white-space: nowrap;
+}
+
+.iread-reader-shell__position-status {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ready 后保留加载文案宽度，避免进度条起点在加载/完成之间横向跳动。 */
+.iread-reader-shell__position-status[data-placeholder="true"] {
+  visibility: hidden;
 }
 
 .iread-reader-shell__slider {
@@ -1929,17 +2120,29 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 .iread-reader-shell__jump {
   display: flex;
   flex-wrap: wrap;
+  flex-shrink: 0;
+  min-width: max-content;
   align-items: center;
   gap: calc(var(--spacing) * 2);
 }
 
 .iread-reader-shell__jump-label {
+  display: inline-flex;
+  align-self: stretch;
+  align-items: center;
   color: var(--muted-foreground);
   font-size: 0.8125rem;
 }
 
 .iread-reader-shell__jump-input {
   width: calc(var(--spacing) * 20);
+}
+
+/* 缩放值在“自动”和具体百分比之间切换时保持宽度稳定。 */
+.iread-reader-shell__pdf-controls [data-reader-pdf-zoom-value] {
+  min-width: 3.5rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .iread-reader-shell__jump-error {
@@ -1950,10 +2153,136 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   line-height: 1.5;
 }
 
-.iread-reader-shell__engine-hint {
-  flex-basis: 100%;
+.iread-reader-shell__position-text-compact {
+  display: none;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.iread-reader-shell__more {
+  display: none;
+  flex-shrink: 0;
+}
+
+/* 窄屏底栏：翻页 + 紧凑页码/进度 + 进度条 + “⋯ 更多”菜单保持物理单行。 */
+@media (width < 72rem) {
+  .iread-reader-shell__bottombar {
+    gap: calc(var(--spacing) * 1);
+  }
+
+  .iread-reader-shell__position {
+    display: contents;
+  }
+
+  .iread-reader-shell__position-text--wide {
+    display: none;
+  }
+
+  .iread-reader-shell__position-text-compact {
+    display: inline-flex;
+    order: 2;
+    align-items: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .iread-reader-shell__page-nav--pager {
+    display: contents;
+  }
+
+  .iread-reader-shell__page-nav--pager [data-reader-page-previous] {
+    order: 1;
+  }
+
+  .iread-reader-shell__page-nav--pager [data-reader-page-next] {
+    order: 3;
+  }
+
+  .iread-reader-shell__slider {
+    order: 4;
+    min-width: calc(var(--spacing) * 10);
+    flex: 1 1 3rem;
+  }
+
+  .iread-reader-shell__pdf-controls,
+  .iread-reader-shell__jump {
+    display: none;
+  }
+
+  .iread-reader-shell__more {
+    display: inline-flex;
+    order: 5;
+  }
+}
+
+.iread-reader-more {
+  gap: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.iread-reader-more__body {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 3);
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4)
+    calc(var(--spacing) * 4);
+}
+
+.iread-reader-more__group {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+}
+
+.iread-reader-more__label {
   margin: 0;
   color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.iread-reader-more__row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+}
+
+.iread-reader-more__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(var(--spacing) * 2);
+}
+
+.iread-reader-more__grid [data-selected="true"] {
+  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.iread-reader-more__zoom-value {
+  min-width: calc(var(--spacing) * 12);
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.iread-reader-more__jump {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+}
+
+.iread-reader-more__jump-input {
+  min-width: 0;
+  flex: 1;
+}
+
+.iread-reader-more__error {
+  margin: 0;
+  color: var(--destructive);
   font-size: 0.75rem;
   line-height: 1.5;
 }
@@ -2125,6 +2454,18 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   background: var(--accent);
   color: var(--accent-foreground);
   font-weight: 600;
+}
+
+.iread-reader-toc__external {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+}
+
+.iread-reader-toc__external:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 /* 书签 */
@@ -2488,6 +2829,9 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
    ========================================================================== */
 
 .iread-pdf {
+  --iread-pdf-paper: #f4f2ee;
+  /* 与引擎 PDF_GAP_PIXELS 保持一致；连续/横向布局必须共用同一值。 */
+  --iread-pdf-gap: 12px;
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -2499,6 +2843,18 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   background: var(--background);
   color: var(--foreground);
   user-select: none;
+}
+
+.iread-pdf[data-gap="compact"] {
+  --iread-pdf-gap: 4px;
+}
+
+.iread-pdf[data-gap="standard"] {
+  --iread-pdf-gap: 12px;
+}
+
+.iread-pdf[data-gap="relaxed"] {
+  --iread-pdf-gap: 24px;
 }
 
 .iread-pdf[data-background="paper"] {
@@ -2515,33 +2871,6 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-pdf[data-background="midnight"] {
   background: var(--color-slate-950, var(--background));
-}
-
-.iread-pdf__toolbar {
-  position: relative;
-  z-index: 8;
-  display: flex;
-  flex-wrap: wrap;
-  flex-shrink: 0;
-  align-items: center;
-  gap: calc(var(--spacing) * 2);
-  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
-  border-bottom: 1px solid var(--border);
-  background: var(--background);
-}
-
-.iread-pdf[data-toolbar="hidden"] .iread-pdf__toolbar {
-  display: none;
-}
-
-.iread-pdf__group {
-  display: flex;
-  align-items: center;
-  gap: calc(var(--spacing) * 1);
-}
-
-.iread-pdf__group--end {
-  margin-inline-start: auto;
 }
 
 .iread-pdf__button {
@@ -2588,53 +2917,10 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   opacity: 0.9;
 }
 
-.iread-pdf__button--quiet {
-  border-color: transparent;
-  background: transparent;
-}
-
 .iread-pdf__button--small {
   height: calc(var(--spacing) * 7);
   min-width: calc(var(--spacing) * 7);
   font-size: 0.75rem;
-}
-
-.iread-pdf__page-indicator,
-.iread-pdf__zoom-indicator {
-  min-width: calc(var(--spacing) * 12);
-  color: var(--muted-foreground);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.5;
-  text-align: center;
-}
-
-.iread-pdf__select {
-  height: calc(var(--spacing) * 8);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 0 calc(var(--spacing) * 2);
-}
-
-.iread-pdf__select:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
-.iread-pdf__toolbar-status {
-  flex-basis: 100%;
-  min-height: 0;
-  color: var(--muted-foreground);
-  font-size: 0.75rem;
-  line-height: 1.4;
-}
-
-.iread-pdf__toolbar-status:empty {
-  display: none;
 }
 
 .iread-pdf__viewport {
@@ -2645,6 +2931,10 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   padding: calc(var(--spacing) * 2);
   padding-inline: calc(var(--spacing) * 2 + env(safe-area-inset-left))
     calc(var(--spacing) * 2 + env(safe-area-inset-right));
+  /* 引擎自己做锚点校正，关闭浏览器原生 scroll anchoring 防止双重补偿。 */
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  scroll-behavior: auto;
   overscroll-behavior: contain;
   outline: none;
   -webkit-overflow-scrolling: touch;
@@ -2671,14 +2961,14 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: calc(var(--spacing) * 3);
+  gap: var(--iread-pdf-gap, 12px);
 }
 
 .iread-pdf__pages[data-layout="horizontal"] {
   display: flex;
   width: max-content;
   align-items: flex-start;
-  gap: calc(var(--spacing) * 3);
+  gap: var(--iread-pdf-gap, 12px);
 }
 
 .iread-pdf__page {
@@ -2689,7 +2979,7 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   flex-shrink: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  background: white;
+  background: var(--iread-pdf-paper, #f4f2ee);
   box-shadow: 0 1px 3px oklch(0 0 0 / 0.14);
 }
 
@@ -2705,20 +2995,59 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   height: 100%;
 }
 
-.iread-pdf__page[data-state="idle"] .iread-pdf__page-canvas::after,
-.iread-pdf__page[data-state="rendering"] .iread-pdf__page-canvas::after {
+/* 未渲染占位：纸张色 + 低对比骨架，chip 固定在页面顶部，避免整屏纯白。 */
+.iread-pdf__page-placeholder {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
-  background: color-mix(in oklab, var(--muted) 55%, transparent);
-  color: var(--muted-foreground);
-  content: "正在渲染";
-  font-size: 0.8125rem;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      105deg,
+      transparent 0 42%,
+      color-mix(in oklab, #ffffff 38%, transparent) 50%,
+      transparent 58%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--iread-pdf-paper, #f4f2ee) 88%, #e4ddd2) 0%,
+      var(--iread-pdf-paper, #f4f2ee) 100%
+    );
+  transition: opacity 120ms ease-out;
 }
 
-.iread-pdf__page[data-state="ready"] .iread-pdf__page-canvas::after {
-  display: none;
+.iread-pdf__page[data-canvas-ready="true"] .iread-pdf__page-placeholder {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.iread-pdf__page[data-state="error"] .iread-pdf__page-placeholder {
+  background: var(--muted);
+}
+
+.iread-pdf__page-placeholder-chip {
+  position: absolute;
+  top: calc(var(--spacing) * 3);
+  left: 50%;
+  max-width: calc(100% - calc(var(--spacing) * 8));
+  overflow: hidden;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2.5);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--background) 76%, transparent);
+  color: color-mix(in oklab, var(--muted-foreground) 78%, var(--foreground));
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iread-pdf__page-placeholder {
+    transition: none;
+  }
 }
 
 .iread-pdf__page-error {
@@ -2744,178 +3073,6 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
   margin: 0;
   font-size: 0.875rem;
   line-height: 1.6;
-}
-
-.iread-pdf__search,
-.iread-pdf__outline {
-  position: absolute;
-  top: calc(var(--spacing) * 14);
-  right: calc(var(--spacing) * 3);
-  z-index: 15;
-  display: flex;
-  width: min(26rem, calc(100% - var(--spacing) * 6));
-  max-height: min(32rem, 70%);
-  flex-direction: column;
-  gap: calc(var(--spacing) * 2);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  box-shadow: 0 12px 28px oklch(0 0 0 / 0.18);
-  padding: calc(var(--spacing) * 3);
-}
-
-.iread-pdf__search[hidden],
-.iread-pdf__outline[hidden] {
-  display: none;
-}
-
-.iread-pdf__panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: calc(var(--spacing) * 2);
-}
-
-.iread-pdf__panel-title {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.iread-pdf__search-form {
-  display: flex;
-  gap: calc(var(--spacing) * 2);
-}
-
-.iread-pdf__search-input {
-  min-width: 0;
-  flex: 1;
-  height: calc(var(--spacing) * 8);
-  border: 1px solid var(--input);
-  border-radius: var(--radius-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 0 calc(var(--spacing) * 2);
-}
-
-.iread-pdf__search-input:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
-
-.iread-pdf__search-controls {
-  display: flex;
-  gap: calc(var(--spacing) * 1);
-}
-
-.iread-pdf__search-status,
-.iread-pdf__outline-status {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: 0.75rem;
-  line-height: 1.5;
-}
-
-.iread-pdf__search-results {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: calc(var(--spacing) * 1);
-  overflow: auto;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.iread-pdf__search-result {
-  margin: 0;
-}
-
-.iread-pdf__search-result-button {
-  width: 100%;
-  overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--foreground);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.75rem;
-  line-height: 1.5;
-  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2);
-  text-align: start;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.iread-pdf__search-result-button:hover {
-  background: var(--accent);
-}
-
-.iread-pdf__search-result-button[data-active="true"] {
-  border-color: var(--ring);
-  background: var(--accent);
-}
-
-.iread-pdf__outline-list {
-  min-height: 0;
-  overflow: auto;
-}
-
-.iread-pdf__outline-item {
-  display: flex;
-  align-items: center;
-  gap: calc(var(--spacing) * 1);
-  padding-inline-start: calc(var(--spacing) * 2);
-}
-
-.iread-pdf__outline-item[data-level="1"] {
-  padding-inline-start: calc(var(--spacing) * 4);
-}
-
-.iread-pdf__outline-item[data-level="2"] {
-  padding-inline-start: calc(var(--spacing) * 6);
-}
-
-.iread-pdf__outline-item[data-level="3"] {
-  padding-inline-start: calc(var(--spacing) * 8);
-}
-
-.iread-pdf__outline-button,
-.iread-pdf__outline-label {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  border: 0;
-  background: transparent;
-  color: var(--foreground);
-  font: inherit;
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 1);
-  text-align: start;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.iread-pdf__outline-button {
-  cursor: pointer;
-}
-
-.iread-pdf__outline-button:hover {
-  background: var(--accent);
-}
-
-.iread-pdf__outline-link {
-  flex-shrink: 0;
-  color: var(--primary);
-  font-size: 0.75rem;
-  text-decoration: underline;
 }
 
 .iread-pdf__loading {
@@ -3153,27 +3310,6 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-pdf .annotationLayer[data-main-rotation="270"] .norotate {
   transform: rotate(90deg);
-}
-
-@media (width < 48rem) {
-  .iread-pdf__toolbar {
-    gap: calc(var(--spacing) * 1);
-    padding-inline: calc(var(--spacing) * 2 + env(safe-area-inset-left))
-      calc(var(--spacing) * 2 + env(safe-area-inset-right));
-  }
-
-  .iread-pdf__page-indicator {
-    min-width: calc(var(--spacing) * 10);
-  }
-
-  .iread-pdf__search,
-  .iread-pdf__outline {
-    top: calc(var(--spacing) * 3);
-    right: calc(var(--spacing) * 2);
-    left: calc(var(--spacing) * 2);
-    width: auto;
-    max-height: 78%;
-  }
 }
 
 /* 书库查询、视图设置与移动筛选 */
@@ -3420,6 +3556,7 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 
 .iread-book-card__subtitle {
   display: -webkit-box;
+  min-height: 1.4em;
   overflow: hidden;
   margin: 0;
   -webkit-box-orient: vertical;
@@ -3431,42 +3568,111 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 .iread-book-list {
+  --iread-list-cover-width: 48px;
+  --iread-list-format-width: 4.5rem;
+  --iread-list-status-width: 5rem;
+  --iread-list-progress-width: 8.5rem;
+  --iread-list-actions-width: 4.75rem;
+  --iread-list-column-gap: calc(var(--spacing) * 3);
+
   display: flex;
   width: 100%;
   flex-direction: column;
   gap: var(--iread-card-gap-size);
 }
 
+.iread-book-list[data-show-format="false"] {
+  --iread-list-format-width: 0px;
+}
+
+.iread-book-list[data-show-progress="false"] {
+  --iread-list-progress-width: 0px;
+}
+
+.iread-book-list[data-show-format="false"] .iread-book-list__format,
+.iread-book-list[data-show-progress="false"] .iread-book-list__progress,
+.iread-book-list[data-show-authors="false"] .iread-book-list__authors,
+.iread-book-list[data-show-subtitle="false"] .iread-book-list__subtitle {
+  display: none;
+}
+
 .iread-book-list__item {
   content-visibility: auto;
-  contain-intrinsic-size: auto 6rem;
+  contain-intrinsic-size: auto 5.875rem;
+  display: grid;
+  grid-template-columns:
+    var(--iread-list-cover-width)
+    minmax(0, 1fr)
+    var(--iread-list-format-width)
+    var(--iread-list-status-width)
+    var(--iread-list-progress-width)
+    var(--iread-list-actions-width);
+  align-items: center;
+  column-gap: var(--iread-list-column-gap);
+  padding: 10px 16px;
+}
+
+.iread-book-list__cover-cell {
+  position: relative;
+  width: var(--iread-list-cover-width);
+  min-width: 0;
+  align-self: center;
+}
+
+.iread-book-list__cover-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+}
+
+.iread-book-list__cover-link:focus-visible,
+.iread-book-list__link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .iread-book-list__link {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-column: 2 / -2;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: calc(var(--spacing) * 4);
+  min-width: 0;
   color: inherit;
   text-decoration: none;
+}
+
+.iread-book-list__actions {
+  display: flex;
+  grid-column: 6;
+  align-items: center;
+  justify-self: end;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.iread-book-list__item:hover .iread-book-list__actions,
+.iread-book-list__item:focus-within .iread-book-list__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .iread-book-list__actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .iread-book-list__link:hover {
   border-color: var(--ring);
 }
 
-.iread-book-list__link:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
 .iread-book-list__cover {
-  width: calc(var(--spacing) * 14);
+  width: 100%;
   height: auto;
   flex-shrink: 0;
-  align-self: flex-start;
   overflow: hidden;
   border-radius: var(--radius-md);
 }
@@ -3488,48 +3694,99 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 }
 
 .iread-book-list__content {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .iread-book-list__title {
-  display: -webkit-box;
+  display: block;
   overflow: hidden;
   width: 100%;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  min-width: 0;
   font-size: var(--iread-card-title-size);
   font-weight: 600;
   line-height: 1.4;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .iread-book-list__subtitle,
 .iread-book-list__authors {
-  display: -webkit-box;
+  display: block;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
+  margin: 0;
   font-size: var(--iread-card-meta-size);
   line-height: 1.4;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  text-wrap: nowrap;
+  white-space: nowrap;
 }
 
-.iread-book-list__badges {
+.iread-book-list__format,
+.iread-book-list__status {
   display: flex;
-  flex-wrap: wrap;
-  gap: calc(var(--spacing) * 1);
+  min-width: 0;
+  align-items: center;
 }
 
 .iread-book-list__progress {
-  min-width: 8rem;
-  max-width: 12rem;
-  flex: 0 0 auto;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
   color: var(--muted-foreground);
   font-size: 0.75rem;
 }
 
 .iread-book-list__progress [data-slot="progress"] {
   flex: 1;
+  min-width: 0;
+}
+
+.iread-book-list__progress span {
+  flex-shrink: 0;
+}
+
+.iread-book-list__status-dot {
+  display: none;
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--background);
+  border-radius: 9999px;
+  background: var(--muted-foreground);
+}
+
+.iread-book-list__status-dot[data-status="error"] {
+  background: var(--destructive);
+}
+
+.iread-book-list__status-dot[data-status="indexing"] {
+  background: var(--primary);
+}
+
+@media (max-width: 900px) {
+  .iread-book-list {
+    --iread-list-cover-width: 48px;
+    --iread-list-format-width: 3.25rem;
+    --iread-list-status-width: 4.25rem;
+    --iread-list-progress-width: 4.5rem;
+    --iread-list-actions-width: 4.75rem;
+    --iread-list-column-gap: calc(var(--spacing) * 2);
+  }
+
+  .iread-book-list__item {
+    padding: 8px 12px;
+  }
+
+  .iread-book-list__progress {
+    justify-content: flex-end;
+  }
 }
 
 .iread-library-view-fields {
@@ -3649,14 +3906,65 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .iread-book-list__item {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    column-gap: calc(var(--spacing) * 2);
+    padding: 8px 12px;
+  }
+
+  .iread-book-list__cover-cell {
+    width: 40px;
+  }
+
   .iread-book-list__link {
-    flex-wrap: wrap;
+    display: flex;
+    grid-column: 2;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: calc(var(--spacing) * 2);
+  }
+
+  .iread-book-list__content {
+    flex: 1;
+    flex-direction: row;
+    align-items: baseline;
+    gap: calc(var(--spacing) * 1.5);
+  }
+
+  .iread-book-list__title {
+    flex: 1 1 auto;
+  }
+
+  .iread-book-list__authors {
+    max-width: 42%;
+    flex: 0 1 auto;
+  }
+
+  .iread-book-list__format,
+  .iread-book-list__status,
+  .iread-book-list__subtitle {
+    display: none;
+  }
+
+  .iread-book-list__status-dot {
+    display: block;
   }
 
   .iread-book-list__progress {
-    max-width: none;
-    flex-basis: 100%;
-    order: 3;
+    width: auto;
+    min-width: 2.5rem;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+  }
+
+  .iread-book-list__progress [data-slot="progress"] {
+    display: none;
+  }
+
+  .iread-book-list__actions {
+    grid-column: 3;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .iread-library-view-fields {
@@ -4250,3 +4558,138 @@ html[data-nav-compact="true"] [data-slot="sidebar-group"] {
 .iread-reader-pdf-search__page { font-weight: var(--font-weight-medium); }
 .iread-reader-pdf-search__snippet { color: var(--muted-foreground); white-space: normal; text-align: start; }
 .iread-reader-pdf-search__result[data-active="true"] { background: var(--accent); }
+
+/* 手机沉浸阅读：悬浮工具栏、正文全高与双指整体缩放。 */
+@media (max-width: 767.98px) {
+  .iread-reader-shell__topbar,
+  .iread-reader-shell__bottombar {
+    position: absolute;
+    right: calc(8px + env(safe-area-inset-right));
+    left: calc(8px + env(safe-area-inset-left));
+    z-index: 20;
+    box-sizing: border-box;
+    width: auto;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--background);
+    background: color-mix(in oklab, var(--background) 90%, transparent);
+    box-shadow: 0 10px 28px oklch(0 0 0 / 0.18);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+  }
+
+  .iread-reader-shell__topbar {
+    top: calc(8px + env(safe-area-inset-top));
+    max-height: 60px;
+    padding: 6px 10px;
+  }
+
+  .iread-reader-shell__bottombar {
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    max-height: 64px;
+    padding: 6px 10px;
+  }
+
+  .iread-reader-shell__stage,
+  .iread-reader-shell[data-toolbars="hidden"] .iread-reader-shell__stage {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    touch-action: pan-x pan-y;
+  }
+
+  .iread-reader-shell__notice {
+    position: absolute;
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(80px + env(safe-area-inset-bottom));
+    left: calc(12px + env(safe-area-inset-left));
+    z-index: 21;
+    max-height: min(30dvh, 12rem);
+    overflow: auto;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--background);
+    background: color-mix(in oklab, var(--background) 92%, transparent);
+    box-shadow: 0 8px 22px oklch(0 0 0 / 0.2);
+    text-align: start;
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+  }
+
+  .iread-reader-shell__topbar button,
+  .iread-reader-shell__bottombar button,
+  .iread-reader-shell__more {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .iread-reader-shell__more {
+    flex-shrink: 0;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  @media (max-width: 767.98px) {
+    .iread-reader-shell__topbar,
+    .iread-reader-shell__bottombar,
+    .iread-reader-shell__notice {
+      background: var(--background);
+    }
+  }
+}
+
+.iread-epub-zoom {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.iread-epub-zoom > foliate-view {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.iread-pdf[data-pdf-pinching] .iread-pdf__pages {
+  will-change: transform;
+}
+
+.iread-pdf[data-pdf-pinching] .textLayer {
+  user-select: none;
+  pointer-events: none;
+}
+
+.iread-pdf[data-pdf-pinching] .annotationLayer {
+  pointer-events: none;
+}
+
+.iread-comic-reader__viewport {
+  align-items: center;
+  align-items: safe center;
+  justify-content: center;
+  justify-content: safe center;
+}
+
+.iread-comic-reader__spread {
+  justify-content: center;
+  justify-content: safe center;
+}
+
+.iread-comic-reader[data-zoom-overflow="true"] .iread-comic-reader__viewport {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.iread-comic-reader[data-zoom-overflow="true"] .iread-comic-reader__spread,
+.iread-comic-reader[data-zoom-overflow="true"] .iread-comic-reader__continuous {
+  justify-content: flex-start;
+}
+
+.iread-reader-more button {
+  min-height: 40px;
+}
+
+.iread-reader-more__row button {
+  min-width: 40px;
+}

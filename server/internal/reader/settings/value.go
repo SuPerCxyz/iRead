@@ -21,7 +21,37 @@ const SchemaVersion int64 = 1
 const Group = "reader"
 
 // BuiltInVersion 是内置默认值版本；随默认字段变化递增。
-const BuiltInVersion int64 = 1
+// 版本 2：PDF 默认缩放从 fit-width 改为 manual 100%。
+const BuiltInVersion int64 = 2
+
+// Profile 区分同一本书在桌面/平板（web）与手机（mobile）视口下的稀疏覆盖。
+// 全局设置仍只有一份，不按 profile 拆分。
+type Profile string
+
+const (
+	// ProfileWeb 对应视口宽度 >= 768px。
+	ProfileWeb Profile = "web"
+	// ProfileMobile 对应视口宽度 < 768px。
+	ProfileMobile Profile = "mobile"
+	// DefaultProfile 是省略 profile 查询参数时的默认值，兼容旧客户端。
+	DefaultProfile = ProfileWeb
+)
+
+// ParseProfile 解析 API 与存储使用的 profile 名称。
+func ParseProfile(value string) (Profile, bool) {
+	switch Profile(value) {
+	case ProfileWeb, ProfileMobile:
+		return Profile(value), true
+	default:
+		return "", false
+	}
+}
+
+// Valid 报告 profile 是否受支持。
+func (p Profile) Valid() bool {
+	_, ok := ParseProfile(string(p))
+	return ok
+}
 
 // Record 是 store 层与 DTO 层共用的持久化投影。
 type Record struct {
@@ -44,6 +74,7 @@ type BookDTO struct {
 	SchemaVersion   int64                        `json:"schemaVersion"`
 	BookID          string                       `json:"bookId"`
 	FileVersion     string                       `json:"fileVersion"`
+	Profile         string                       `json:"profile"`
 	Revision        string                       `json:"revision"`
 	UpdatedAt       *string                      `json:"updatedAt"`
 	Overrides       map[string]any               `json:"overrides"`
@@ -100,12 +131,13 @@ func DefaultValue() map[string]any {
 			"publisherCSSMode": "publisher",
 		},
 		"pdf": map[string]any{
-			"layoutMode":     "single",
-			"zoomMode":       "fit-width",
-			"manualScale":    1.0,
-			"gap":            "standard",
-			"background":     "inherit",
-			"toolbarVisible": true,
+			"layoutMode":  "single",
+			"zoomMode":    "manual",
+			"manualScale": 1.0,
+			"gap":         "standard",
+			"background":  "inherit",
+			// toolbarVisible 已废弃：前端 PDF 引擎中间工具栏已移除。仅保留字段以兼容旧版客户端 JSON，不再作为新默认展示。
+			"toolbarVisible": false,
 		},
 		"comic": map[string]any{
 			"direction":  "ltr",
@@ -148,6 +180,7 @@ var fieldSpecs = []fieldSpec{
 	{"pdf", "manualScale"},
 	{"pdf", "gap"},
 	{"pdf", "background"},
+	// 已废弃字段：保留校验与兼容解析，避免旧客户端 JSON 被拒绝。
 	{"pdf", "toolbarVisible"},
 	{"comic", "direction"},
 	{"comic", "mode"},
@@ -167,6 +200,15 @@ func ParseOverrides(raw []byte) (map[string]any, error) {
 }
 
 func parseGroups(raw []byte, field string) (map[string]any, error) {
+	object, err := decodeJSONObject(raw, field)
+	if err != nil {
+		return nil, err
+	}
+	return parseGroupsObject(object)
+}
+
+// decodeJSONObject 解析严格 JSON 对象；UseNumber 保留客户端数字字面量。
+func decodeJSONObject(raw []byte, field string) (map[string]any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, invalid(field, "缺少 "+field)
 	}
@@ -184,6 +226,10 @@ func parseGroups(raw []byte, field string) (map[string]any, error) {
 	if !ok || object == nil {
 		return nil, invalid(field, field+" 必须是 JSON 对象")
 	}
+	return object, nil
+}
+
+func parseGroupsObject(object map[string]any) (map[string]any, error) {
 	for group, groupValue := range object {
 		if group != "reflow" && group != "pdf" && group != "comic" {
 			return nil, invalid(group, "未知的阅读设置分组 "+group)
@@ -506,6 +552,113 @@ func deepCopyValue(value map[string]any) map[string]any {
 	return copied
 }
 
+// ProfileOverrides 从持久化 JSON 中取出指定 profile 的稀疏覆盖。
+// 兼容旧版顶层 {reflow,pdf,comic}：没有 profiles 时作为 web/mobile 两个 profile 的回退。
+func ProfileOverrides(raw []byte, profile Profile) (map[string]any, error) {
+	if !profile.Valid() {
+		return nil, invalid("profile", "profile 仅支持 web 或 mobile")
+	}
+	object, err := decodeJSONObject(raw, "overrides")
+	if err != nil {
+		return nil, err
+	}
+	profilesValue, hasProfiles := object["profiles"]
+	if !hasProfiles {
+		return parseGroupsObject(object)
+	}
+	if schemaVersion, ok := object["schemaVersion"]; ok {
+		if err := validateStoredSchemaVersion(schemaVersion); err != nil {
+			return nil, err
+		}
+	}
+	profiles, ok := profilesValue.(map[string]any)
+	if !ok || profiles == nil {
+		return nil, invalid("profiles", "profiles 必须是 JSON 对象")
+	}
+	profileValue, ok := profiles[string(profile)]
+	if !ok {
+		return map[string]any{}, nil
+	}
+	profileObject, ok := profileValue.(map[string]any)
+	if !ok || profileObject == nil {
+		return nil, invalid("profiles."+string(profile), "profile 覆盖必须是 JSON 对象，不能为 null")
+	}
+	return parseGroupsObject(profileObject)
+}
+
+func validateStoredSchemaVersion(value any) error {
+	number, ok := value.(json.Number)
+	if !ok {
+		return invalid("schemaVersion", "schemaVersion 必须是整数")
+	}
+	parsed, err := strconv.ParseInt(number.String(), 10, 64)
+	if err != nil || parsed != SchemaVersion {
+		return invalid("schemaVersion", "schemaVersion 仅支持 1")
+	}
+	return nil
+}
+
+// MergeProfileOverrides 把客户端提交的单个 profile 稀疏覆盖并入持久化 JSON，返回新信封。
+// 旧版顶层覆盖在首次按 profile 写入时复制到 web 与 mobile，确保另一 profile 不丢数据；
+// 已存在的其他 profile 与未知 profile 键原样保留。本函数只校验 JSON 对象形状，
+// reflow/pdf/comic 字段语义仍由 HTTP 层的 ParseOverrides 校验。
+func MergeProfileOverrides(raw []byte, profile Profile, nextRaw []byte) (json.RawMessage, error) {
+	if !profile.Valid() {
+		return nil, invalid("profile", "profile 仅支持 web 或 mobile")
+	}
+	object, err := decodeJSONObject(raw, "overrides")
+	if err != nil {
+		return nil, err
+	}
+	next, err := decodeJSONObject(nextRaw, "overrides")
+	if err != nil {
+		return nil, err
+	}
+	if containsNull(next) {
+		return nil, invalid("overrides", "overrides 任意层级都不能为 null")
+	}
+
+	profiles := make(map[string]any, 2)
+	if profilesValue, ok := object["profiles"]; ok {
+		if schemaVersion, ok := object["schemaVersion"]; ok {
+			if err := validateStoredSchemaVersion(schemaVersion); err != nil {
+				return nil, err
+			}
+		}
+		existing, ok := profilesValue.(map[string]any)
+		if !ok || existing == nil {
+			return nil, invalid("profiles", "profiles 必须是 JSON 对象")
+		}
+		for name, value := range existing {
+			profiles[name] = value
+		}
+	} else {
+		legacy := deepCopyValue(object)
+		profiles[string(ProfileWeb)] = deepCopyValue(legacy)
+		profiles[string(ProfileMobile)] = deepCopyValue(legacy)
+	}
+	if _, ok := profiles[string(ProfileWeb)]; !ok {
+		profiles[string(ProfileWeb)] = map[string]any{}
+	}
+	if _, ok := profiles[string(ProfileMobile)]; !ok {
+		profiles[string(ProfileMobile)] = map[string]any{}
+	}
+	profiles[string(profile)] = deepCopyValue(next)
+
+	envelope := struct {
+		SchemaVersion int64          `json:"schemaVersion"`
+		Profiles      map[string]any `json:"profiles"`
+	}{
+		SchemaVersion: SchemaVersion,
+		Profiles:      profiles,
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, invalid("overrides", "overrides 无法序列化")
+	}
+	return json.RawMessage(encoded), nil
+}
+
 // Effective 解析 built-in → 全局 → 本书覆盖，并返回逐字段来源（按 reflow/pdf/comic 分组）。
 func Effective(overrides, global map[string]any) (map[string]any, map[string]map[string]string) {
 	effective := deepCopyValue(DefaultValue())
@@ -573,9 +726,15 @@ func GlobalDTOFrom(record Record) (GlobalDTO, error) {
 	}, nil
 }
 
-// BookDTOFrom 解析单书覆盖与全局记录，返回三级继承后的完整 DTO。
-func BookDTOFrom(bookID, fileVersion string, overrides, global Record) (BookDTO, error) {
-	bookValue, err := ParseOverrides(overrides.Value)
+// BookDTOFrom 解析单书覆盖与全局记录，返回指定 profile 三级继承后的完整 DTO。
+func BookDTOFrom(bookID, fileVersion string, overrides, global Record, profile Profile) (BookDTO, error) {
+	if profile == "" {
+		profile = DefaultProfile
+	}
+	if !profile.Valid() {
+		return BookDTO{}, invalid("profile", "profile 仅支持 web 或 mobile")
+	}
+	bookValue, err := ProfileOverrides(overrides.Value, profile)
 	if err != nil {
 		return BookDTO{}, err
 	}
@@ -591,6 +750,7 @@ func BookDTOFrom(bookID, fileVersion string, overrides, global Record) (BookDTO,
 		SchemaVersion:   SchemaVersion,
 		BookID:          bookID,
 		FileVersion:     fileVersion,
+		Profile:         string(profile),
 		Revision:        formatRevision(overrides.Revision),
 		UpdatedAt:       formatTime(overrides.UpdatedAt),
 		Overrides:       bookValue,

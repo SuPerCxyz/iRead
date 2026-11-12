@@ -23,6 +23,7 @@ import {
   ensureAdmin,
 } from "./auth-helpers.mjs"
 import { assertReaderToolbarLayout } from "./reader-toolbar-layout.mjs"
+import { cdpDrag, cdpPinch } from "./reader-pinch-e2e.mjs"
 
 const WEB_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
 const REPO_ROOT = path.resolve(WEB_ROOT, "..")
@@ -1111,6 +1112,13 @@ async function main() {
     })
     contexts.push(mobileContext)
     const mobile = await mobileContext.newPage()
+    // 该用例只验证 EPUB 阅读/抽屉/翻页；跨上下文进度对账弹窗按“稍后处理”关闭。
+    await mobile.addLocatorHandler(
+      mobile.getByRole("alertdialog", { name: "阅读进度冲突" }),
+      async () => {
+        await mobile.getByRole("button", { name: "稍后处理" }).click()
+      },
+    )
     await mobile.goto(`/read/${bookId}`, { waitUntil: "domcontentloaded" })
     await mobile.locator("[data-reader-epub] foliate-view").waitFor({
       timeout: 20_000,
@@ -1162,6 +1170,264 @@ async function main() {
     await mobile.keyboard.press("Escape")
     await mobileSettings.waitFor({ state: "hidden" })
 
+    logStep("手机 390x844：悬浮工具栏、更多缩放与 iframe 双指整体缩放")
+    const epubFloating = await mobile.evaluate(() => {
+      const topbar = document.querySelector(".iread-reader-shell__topbar")
+      const bottombar = document.querySelector(".iread-reader-shell__bottombar")
+      const stage = document.querySelector(".iread-reader-shell__stage")
+      return {
+        topbarPosition: getComputedStyle(topbar).position,
+        bottombarPosition: getComputedStyle(bottombar).position,
+        topbarTop: topbar.getBoundingClientRect().top,
+        bottombarBottom: bottombar.getBoundingClientRect().bottom,
+        stageHeight: stage.getBoundingClientRect().height,
+        innerHeight,
+      }
+    })
+    assert.equal(epubFloating.topbarPosition, "absolute")
+    assert.equal(epubFloating.bottombarPosition, "absolute")
+    assert.ok(epubFloating.topbarTop >= 7)
+    assert.ok(epubFloating.bottombarBottom <= epubFloating.innerHeight - 7)
+    assert.ok(Math.abs(epubFloating.stageHeight - epubFloating.innerHeight) <= 1)
+
+    const mobileBarControls = await mobile.evaluate(() => {
+      const bar = document.querySelector(".iread-reader-shell__bottombar")
+      const visible = (element) => {
+        if (element === null) return false
+        const rect = element.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      }
+      return {
+        previous: visible(bar.querySelector("[data-reader-page-previous]")),
+        next: visible(bar.querySelector("[data-reader-page-next]")),
+        more: visible(bar.querySelector("[data-reader-more-trigger]")),
+        zoom: visible(bar.querySelector("[data-reader-pdf-zoom-in]")) ||
+          visible(bar.querySelector("[data-reader-pdf-zoom-out]")),
+      }
+    })
+    assert.equal(mobileBarControls.previous, true)
+    assert.equal(mobileBarControls.next, true)
+    assert.equal(mobileBarControls.more, true, "EPUB 手机端必须显示“⋯”")
+    assert.equal(mobileBarControls.zoom, false, "底栏不得出现可见缩放按钮")
+
+    await mobile.locator("[data-reader-more-trigger]").click()
+    const mobileMore = mobile.locator("[data-reader-more-menu]")
+    await mobileMore.waitFor({ timeout: 5_000 })
+    assert.equal(
+      (await mobile.locator("[data-reader-more-zoom-value]").textContent())?.trim(),
+      "100%",
+      "EPUB 更多菜单必须显示当前缩放值",
+    )
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-epub-more-menu.png"),
+    })
+    await mobile.locator("[data-reader-more-zoom-in]").click()
+    await mobile.waitForFunction(
+      () =>
+        document
+          .querySelector(".iread-epub-zoom")
+          ?.getAttribute("data-zoom") !== "1.00",
+      undefined,
+      { timeout: 5_000 },
+    )
+    const menuZoom = Number(
+      await mobile.locator(".iread-epub-zoom").getAttribute("data-zoom"),
+    )
+    assert.ok(menuZoom > 1, `更多菜单放大必须生效（${menuZoom}）`)
+    await mobile.locator("[data-reader-more-zoom-reset]").click()
+    await mobile.waitForFunction(
+      () =>
+        document
+          .querySelector(".iread-epub-zoom")
+          ?.getAttribute("data-zoom") === "1.00",
+      undefined,
+      { timeout: 5_000 },
+    )
+    await mobile.keyboard.press("Escape")
+    await mobileMore.waitFor({ state: "hidden" })
+    await mobile.waitForFunction(
+      () => {
+        const view = document.querySelector("[data-reader-epub] foliate-view")
+        const cfi = view?.lastLocation?.cfi ?? null
+        const state = window.__ireadStableCfi
+        const now = performance.now()
+        if (!state || state.cfi !== cfi) {
+          window.__ireadStableCfi = { cfi, since: now }
+          return false
+        }
+        return now - state.since > 300
+      },
+      undefined,
+      { timeout: 10_000 },
+    )
+
+    const beforePinch = await mobile.evaluate(() => {
+      const view = document.querySelector("[data-reader-epub] foliate-view")
+      const host = document.querySelector("[data-reader-epub]")
+      const contents = view?.renderer?.getContents?.() ?? []
+      const doc = contents[0]?.doc
+      const frame = doc?.defaultView?.frameElement
+      const rect = frame?.getBoundingClientRect()
+      return {
+        viewWidth: view?.getBoundingClientRect().width ?? 0,
+        hostWidth: host?.getBoundingClientRect().width ?? 0,
+        frame: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+        fontSize: doc ? getComputedStyle(doc.body).fontSize : null,
+        cfi: host?.getAttribute("data-epub-cfi") ?? null,
+        index: contents[0]?.index ?? null,
+        page: view?.renderer?.page ?? null,
+        positionText:
+          document.querySelector(".iread-reader-shell__position-text-compact")
+            ?.textContent?.trim() ?? "",
+      }
+    })
+    assert.ok(beforePinch.frame !== null, "必须取得真实 EPUB iframe 区域")
+    await cdpPinch(mobile, {
+      center: {
+        x: beforePinch.frame.x + beforePinch.frame.width / 2,
+        y: beforePinch.frame.y + beforePinch.frame.height * 0.3,
+      },
+      startGap: 60,
+      endGap: 120,
+    })
+    await mobile.waitForFunction(
+      () => {
+        const zoom = Number(
+          document.querySelector(".iread-epub-zoom")?.getAttribute("data-zoom"),
+        )
+        return Number.isFinite(zoom) && zoom > 1.05
+      },
+      undefined,
+      { timeout: 10_000 },
+    )
+    await mobile.waitForFunction(
+      () => {
+        const view = document.querySelector("[data-reader-epub] foliate-view")
+        const cfi = view?.lastLocation?.cfi ?? null
+        const state = window.__ireadStableCfiAfter
+        const now = performance.now()
+        if (!state || state.cfi !== cfi) {
+          window.__ireadStableCfiAfter = { cfi, since: now }
+          return false
+        }
+        return now - state.since > 300
+      },
+      undefined,
+      { timeout: 10_000 },
+    )
+    const afterPinch = await mobile.evaluate(() => {
+      const view = document.querySelector("[data-reader-epub] foliate-view")
+      const host = document.querySelector("[data-reader-epub]")
+      const contents = view?.renderer?.getContents?.() ?? []
+      const doc = contents[0]?.doc
+      return {
+        viewWidth: view?.getBoundingClientRect().width ?? 0,
+        fontSize: doc ? getComputedStyle(doc.body).fontSize : null,
+        cfi: host?.getAttribute("data-epub-cfi") ?? null,
+        index: contents[0]?.index ?? null,
+        page: view?.renderer?.page ?? null,
+        positionText:
+          document.querySelector(".iread-reader-shell__position-text-compact")
+            ?.textContent?.trim() ?? "",
+        visualScale: window.visualViewport?.scale ?? 1,
+        hasSelection: (() => {
+          const selection = document.getSelection()
+          return selection !== null && !selection.isCollapsed
+        })(),
+      }
+    })
+    assert.ok(
+      afterPinch.viewWidth > beforePinch.viewWidth * 1.05,
+      `EPUB 双指后视图必须整体放大（${beforePinch.viewWidth} -> ${afterPinch.viewWidth}）`,
+    )
+    assert.equal(afterPinch.fontSize, beforePinch.fontSize, "EPUB 缩放不得改字号")
+    assert.equal(afterPinch.cfi, beforePinch.cfi, "EPUB 缩放不得改变 CFI")
+    assert.equal(afterPinch.index, beforePinch.index, "EPUB 缩放不得换章")
+    assert.equal(
+      afterPinch.positionText,
+      beforePinch.positionText,
+      "EPUB 缩放不得改变阅读位置",
+    )
+    assert.equal(afterPinch.visualScale, 1, "内容区捏合不得放大浏览器视口")
+    assert.equal(afterPinch.hasSelection, false, "捏合结束必须清除选区")
+    await mobile.screenshot({
+      path: path.join(SCREENSHOT_DIR, "mobile-epub-pinched.png"),
+    })
+
+    const panBefore = await mobile.evaluate(() => {
+      const view = document.querySelector("[data-reader-epub] foliate-view")
+      const host = document.querySelector("[data-reader-epub]")
+      return {
+        transform: view?.style.transform ?? "",
+        cfi: host?.getAttribute("data-epub-cfi") ?? null,
+      }
+    })
+    await cdpDrag(mobile, {
+      from: {
+        x: beforePinch.frame.x + beforePinch.frame.width / 2,
+        y: beforePinch.frame.y + beforePinch.frame.height * 0.4,
+      },
+      to: {
+        x: beforePinch.frame.x + beforePinch.frame.width / 2 - 80,
+        y: beforePinch.frame.y + beforePinch.frame.height * 0.4,
+      },
+    })
+    await mobile.waitForTimeout(200)
+    const panAfter = await mobile.evaluate(() => {
+      const view = document.querySelector("[data-reader-epub] foliate-view")
+      const host = document.querySelector("[data-reader-epub]")
+      return {
+        transform: view?.style.transform ?? "",
+        cfi: host?.getAttribute("data-epub-cfi") ?? null,
+      }
+    })
+    assert.notEqual(
+      panAfter.transform,
+      panBefore.transform,
+      "缩放>1 时单指拖动必须平移内容",
+    )
+    assert.equal(panAfter.cfi, panBefore.cfi, "平移不得改变 CFI")
+
+    // 缩放状态下换章：paginator 必须在测量前临时还原 transform。
+    await mobile.locator("[data-reader-page-next]").click()
+    await mobile.waitForFunction(
+      (previous) => {
+        const view = document.querySelector("[data-reader-epub] foliate-view")
+        return view?.lastLocation?.cfi !== previous
+      },
+      afterPinch.cfi,
+      { timeout: 10_000 },
+    )
+    const afterChapter = await mobile.evaluate(() => {
+      const view = document.querySelector("[data-reader-epub] foliate-view")
+      const host = document.querySelector("[data-reader-epub]")
+      const contents = view?.renderer?.getContents?.() ?? []
+      const doc = contents[0]?.doc
+      return {
+        index: contents[0]?.index ?? null,
+        page: view?.renderer?.page ?? null,
+        pages: view?.renderer?.pages ?? null,
+        fontSize: doc ? getComputedStyle(doc.body).fontSize : null,
+        cfi: host?.getAttribute("data-epub-cfi") ?? null,
+      }
+    })
+    assert.notEqual(afterChapter.cfi, afterPinch.cfi, "换章后 CFI 必须更新")
+    assert.ok(
+      Number.isFinite(afterChapter.pages) && afterChapter.pages > 0,
+      `换章后分页必须有效（pages=${afterChapter.pages}）`,
+    )
+    assert.equal(afterChapter.fontSize, beforePinch.fontSize, "换章不得改字号")
+
+    await mobile.getByRole("button", { name: "目录与书签" }).click()
+    const mobileTocAgain = mobile.locator('[data-reader-panel="toc"]')
+    await mobileTocAgain.waitFor({ timeout: 5_000 })
+    await mobile
+      .locator(".iread-reader-toc__item", { hasText: "第一章" })
+      .first()
+      .click()
+    await mobileTocAgain.waitFor({ state: "hidden" })
+    await waitForEpubText(mobile, "第一章正文")
+
     await mobile.setViewportSize({ width: 844, height: 390 })
     await mobile.waitForFunction(
       () =>
@@ -1173,6 +1439,52 @@ async function main() {
       { timeout: 3000 },
     )
     await waitForEpubText(mobile, "第一章正文")
+
+    await mobile.setViewportSize({ width: 390, height: 844 })
+    await mobile.waitForFunction(
+      () =>
+        Math.round(
+          document
+            .querySelector(".iread-reader-shell")
+            ?.getBoundingClientRect().height ?? 0,
+        ) === 844,
+      undefined,
+      { timeout: 3_000 },
+    )
+
+    // 滚动模式暂不支持整体缩放：菜单不出现缩放组，引擎也不保留 transform。
+    await mobile.getByRole("button", { name: "阅读设置" }).click()
+    const scrollModeSettings = mobile.locator('[data-reader-panel="settings"]')
+    await scrollModeSettings.waitFor({ timeout: 5_000 })
+    await scrollModeSettings.getByLabel("翻页方式").click()
+    await mobile.getByRole("option", { name: "滚动", exact: true }).click()
+    await scrollModeSettings
+      .getByRole("button", { name: "关闭面板" })
+      .click()
+    await scrollModeSettings.waitFor({ state: "hidden" })
+    await mobile.waitForFunction(
+      () =>
+        document
+          .querySelector("[data-reader-epub] foliate-view")
+          ?.getAttribute("flow") === "scrolled",
+      undefined,
+      { timeout: 10_000 },
+    )
+    await mobile.locator("[data-reader-more-trigger]").click()
+    await mobile.locator("[data-reader-more-menu]").waitFor({ timeout: 5_000 })
+    assert.equal(
+      await mobile.locator("[data-reader-more-zoom-in]").count(),
+      0,
+      "EPUB 滚动模式暂不支持整体缩放，菜单不得出现缩放按钮",
+    )
+    assert.equal(
+      await mobile
+        .locator("[data-reader-epub] foliate-view")
+        .evaluate((view) => view.style.transform),
+      "",
+      "滚动模式不得保留缩放 transform",
+    )
+    await mobile.keyboard.press("Escape")
 
     console.log("\n[E2E] 真实 EPUB 共享 Shell 通过")
   } finally {

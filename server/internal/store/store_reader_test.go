@@ -454,8 +454,20 @@ func TestBookReaderOverridesSparseAndRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset.Revision != 2 || string(reset.Overrides) != "{}" {
+	if reset.Revision != 2 || !strings.Contains(string(reset.Overrides), `"profiles"`) {
 		t.Fatalf("空对象恢复默认 = %+v", reset)
+	}
+	var resetEnvelope struct {
+		SchemaVersion int64                      `json:"schemaVersion"`
+		Profiles      map[string]json.RawMessage `json:"profiles"`
+	}
+	if err := json.Unmarshal(reset.Overrides, &resetEnvelope); err != nil {
+		t.Fatalf("解析覆盖信封: %v", err)
+	}
+	if resetEnvelope.SchemaVersion != ReaderSchemaVersion ||
+		string(resetEnvelope.Profiles["web"]) != "{}" ||
+		string(resetEnvelope.Profiles["mobile"]) != "{}" {
+		t.Fatalf("空对象信封 = %s", reset.Overrides)
 	}
 
 	var conflict *ReaderOverridesRevisionConflictError
@@ -474,7 +486,7 @@ func TestBookReaderOverridesSparseAndRevision(t *testing.T) {
 	empty, err := database.PutBookReaderOverrides(ctx, PutBookReaderOverridesParams{
 		BookID: secondBookID, BaseRevision: 0, Overrides: json.RawMessage(`{}`),
 	})
-	if err != nil || empty.Revision != 1 || string(empty.Overrides) != "{}" {
+	if err != nil || empty.Revision != 1 || !strings.Contains(string(empty.Overrides), `"profiles"`) {
 		t.Fatalf("首次空对象 = %+v err=%v", empty, err)
 	}
 

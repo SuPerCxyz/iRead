@@ -228,12 +228,16 @@ export interface ReaderSettingsEnvelope {
   value: Record<string, unknown>
 }
 
+export const READER_PROFILES = ["web", "mobile"] as const
+export type ReaderProfile = (typeof READER_PROFILES)[number]
+
 export type ReaderSettingSource = "built-in" | "global" | "book"
 
 export interface BookReaderOverrides {
   schemaVersion: number
   bookId: string
   fileVersion: string
+  profile: ReaderProfile
   revision: string
   updatedAt: string | null
   overrides: Record<string, unknown>
@@ -747,11 +751,16 @@ function readObjectField(
 
 export function parseBookReaderOverrides(value: unknown): BookReaderOverrides {
   const record = readObject(value, "单书阅读设置")
+  const profile =
+    record.profile === "mobile" || record.profile === "web"
+      ? record.profile
+      : "web"
   return {
     schemaVersion:
       typeof record.schemaVersion === "number" ? record.schemaVersion : 1,
     bookId: readString(record, "bookId", "书籍编号"),
     fileVersion: readString(record, "fileVersion", "文件版本"),
+    profile,
     revision: readRevision(record, "revision", "单书设置修订号"),
     updatedAt: readNullableString(record, "updatedAt", "单书设置更新时间"),
     overrides: readObjectField(record, "overrides", "单书覆盖值"),
