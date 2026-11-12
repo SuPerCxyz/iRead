@@ -33,3 +33,10 @@
 #### Scenario: 阅读器修订闭环
 - **WHEN** 用户执行本轮已确认的阅读器操作
 - **THEN** 改变边距/窗口或在正文内操作后，页区占用与用户设置一致，locator稳定，工具栏/翻页真实生效且不重复触发。
+
+### Requirement: EPUB 整体缩放与悬浮工具栏
+系统 SHALL 在手机分页模式对 `<foliate-view>` 做 translate+scale 的整体缩放（0.5–3），不得修改正文 `fontSize` 或 CFI；缩放>1 时单指拖动平移。每次分页器渲染/换章/重排前临时把 transform 还原为 1，布局完成后再恢复，避免 `getBoundingClientRect` 测量被祖先 transform 污染。滚动模式可暂不支持整体缩放，但必须明确不保留 transform。手机顶/底工具栏悬浮在正文上，显隐不改变正文高度；“⋯”至少提供缩放与复位 100%。
+
+#### Scenario: 缩放后换章与旋转
+- **WHEN** 用户在分页模式双指放大、随后换章或旋转设备
+- **THEN** 正文视觉尺寸变大而 `getComputedStyle(body).fontSize` 与 CFI 不变，分页仍按未缩放的宿主宽度计算，页码/位置不误跳。

@@ -112,6 +112,17 @@
 - [x] 8.5 PDF页文本拼接/normalization和跨item命中映射；贯通具体命中/当前总数/前后及Enter快捷键/滚入高亮，保留当前查询全部命中高亮并单独标活动项；验收同页多命中、无结果/错误、换词/清空/关闭/销毁取消，不产生永久标注。
 - [x] 8.6 定向单测、类型/lint/build/唯一样式与OpenSpec strict，使用隔离EPUB/PDF/漫画runner及只读真实样本，Q独审和最终范围/状态核验；不据本轮回归勾大PDF300MB/长时内存/真机等未验里程碑，不归档。
 
+## 9. 2026-11-11 追加需求：原件下载与书名编辑（本轮实施）
+
+本节为 2026-11-11 用户确认的追加需求，不计入原 61 项里程碑计数。只改 `server/` 代码与测试、本 change 相关文档及 `server/README.md`；不部署、不提交 Git、不迁移或批量重命名既有书籍。
+
+- [x] 9.1 实现 `GET/HEAD /api/v1/books/{bookId}/download`：认证后流式返回原件，`Content-Type` 取 `media_type`（空回退 `application/octet-stream`），`Content-Disposition: attachment` 文件名=显示书名+原扩展名（`mime.FormatMediaType`，中文用 `filename*`），带强 `ETag`、`Cache-Control: private, no-cache`、`Accept-Ranges`，GET/HEAD/Range/304 由 `ServeContent` 处理；未知书/文件 404、大小不一致 503、错误体不泄露路径/SQL。
+- [x] 9.2 实现 `PATCH /api/v1/books/{bookId}`：CSRF/Origin 门禁、严格 JSON、64 KiB 上限、仅 `title`；trim 后 1–500 rune，拒绝 NUL/控制字符；空/超长/控制字符/非法 UTF-8/未知字段/类型不符等语义校验统一 422 `invalid_request`（details 含 field/reason），JSON 语法错误 400、非 JSON Content-Type 415、超限 413；未知书 404、indexing 409；成功后磁盘原件原子改名为安全书名+原扩展名（目标存在追加 ` (2)`…，不覆盖），单事务更新 `books.display_title/updated_at` 与 `book_files.original_file_name/storage_rel_path`，DB 失败回滚文件；`fileVersion` 保持内容 SHA-256。
+- [x] 9.3 审计所有存储读取：PDF content、EPUB/漫画 manifest 与资源、索引/重索引、下载均以数据库 `storage_rel_path` 为准，不存在从 `fileVersion` 重新拼 `<sha>.<ext>` 的读取路径；上传初始命名仍为哈希名，旧书不批量迁移。启动恢复仅对未完成上传沿用 prepared 意图记录的路径，而改名在 `indexing` 状态返回 409，二者不会交叠。
+- [x] 9.4 Go 测试覆盖四格式下载、中文/特殊字符文件名、HEAD、Range 206、401/404/405/503、路径穿越；改名空/空白/超长/NUL/控制字符/非法 UTF-8/未知字段/类型不符/JSON 语法错误/错误 Content-Type/无 CSRF/404/indexing 409、语义校验 422 的 field/reason、磁盘旧文件消失与新文件存在、SHA 不变、三字段更新、重复改名、同名后缀、DB 触发失败回滚、改名后 PDF content/Range/下载/重索引，以及改名与下载并发无 404。
+- [x] 9.5 同步 `contracts.md`、`ui-design.md`、`library-storage` spec 与 `server/README.md`；`openspec validate build-iread-pwa --strict` 通过，原 61 项勾选与计数不改动。
+- [x] 9.6 验证：`gofmt -l .` 无输出，`go vet ./...`、`go test ./...`、`go test -race ./...`、`go build ./...` 通过；工作区 `data/db` 为空、未找到可复制的 dev DB，故使用全新临时 SQLite + 真实 server 进程上传 EPUB/PDF 验证改名、下载、Range、重索引，结果与未决项见交付报告。
+
 ## Workflow follow-up
 
 - 阶段1交付后保持本change活跃，后续执行按上述依赖续用，不因为artifact齐全或阶段1通过而归档。

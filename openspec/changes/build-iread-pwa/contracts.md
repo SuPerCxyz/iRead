@@ -49,6 +49,8 @@ CSRF协议：客户端先GET auth/status；未登录时创建短期预认证Http
 | 1/3 | GET/PUT `/settings/{group}` | group限定appearance/library/reader；分组独立revision，防止无关设置互相冲突 |
 | 2 | GET `/books` | 书库分页、搜索、筛选、排序；真实数据 |
 | 2 | GET `/books/{bookId}` | 详情、原格式/大小/可读状态、元数据、最近进度摘要；不读取整本内容 |
+| 2 | PATCH `/books/{bookId}` | JSON `{title}` 修改显示书名，并同步重命名磁盘原件；成功返回完整详情 |
+| 2 | GET/HEAD `/books/{bookId}/download` | 下载当前登记原件；文件名=显示书名+原扩展名，支持 Range/HEAD |
 | 2 | POST `/uploads` | 预留单文件上传意图；批量由客户端以有界队列组合 |
 | 2 | PUT `/uploads/{uploadId}/content` | 整文件流式上传；非断点续传 |
 | 2 | GET `/uploads/{uploadId}` | 上传阶段/对应原件/后台任务状态 |
@@ -59,14 +61,14 @@ CSRF协议：客户端先GET auth/status；未登录时创建短期预认证Http
 | 3/4/6 | GET `/books/{bookId}/manifest` | 当前fileVersion、能力、目录与格式资源入口 |
 | 3/6 | GET `/books/{bookId}/versions/{fileVersion}/resources/{resourceId}` | 已索引且归属该书的章节/附件/漫画页；不接收任意文件路径 |
 | 4 | GET/HEAD `/books/{bookId}/versions/{fileVersion}/content` | PDF原始字节读取与Range；阅读所需流接口，不代表原件下载产品入口 |
-| 3 | GET/PUT `/books/{bookId}/reader-overrides` | 稀疏单书覆盖、解析后的值及字段来源；条件revision写入 |
+| 3 | GET/PUT `/books/{bookId}/reader-overrides` | 按 `profile=web` 或 `mobile` 读写稀疏单书覆盖、解析后的值及字段来源；两 profile 共享条件 revision 写入 |
 | 3–5 | GET/PUT `/books/{bookId}/progress` | 当前原件版本的格式locator，条件revision写入 |
 | 3/4/6 | GET/POST `/books/{bookId}/bookmarks` | 基础定位书签列表/创建，按格式接入稳定locator |
 | 3/4/6 | DELETE `/books/{bookId}/bookmarks/{bookmarkId}` | 仅移除书签记录，If-Match保护；不是图书删除 |
 | 5 | GET `/cache/usage` | 服务端派生缓存用量/状态；浏览器缓存用量由本机读取再展示 |
 | 5 | POST `/cache/clear` | 仅阅读派生缓存清理，202任务结果，绝不删除原件/进度/偏好 |
 
-除`/healthz`外路径均相对`/api/v1`。未列出的原件下载产品功能、图书删除、元数据编辑、上传断点续传均不属于已确认范围。尚未实现端点不可在UI中伪装已可操作。
+除`/healthz`外路径均相对`/api/v1`。原件下载与显示书名编辑已纳入本轮范围（见 4.1）；图书删除、格式转换、提取元数据编辑、上传断点续传仍不属于已确认范围。尚未实现端点不可在UI中伪装已可操作。
 
 ## 4. 书库查询与存储模型
 
@@ -75,8 +77,8 @@ CSRF协议：客户端先GET auth/status；未登录时创建短期预认证Http
 | 实体 | 最少字段与约束 |
 |---|---|
 | books | id、displayTitle、format、status、createdAt、updatedAt；status为indexing/ready/unsupported/error，不能仅凭上传HTTP成功标可读 |
-| book_files | bookId、原始文件名/扩展名、sha256、byteSize、内部存储引用、createdAt；当前每书一个原件即可，hash/大小可核验，存储引用不暴露给客户端 |
-| book_metadata | bookId、title、authors、subtitle、coverResourceId、索引版本/提取状态；用户元数据编辑不纳入当前范围 |
+| book_files | bookId、原始文件名/扩展名、sha256、byteSize、内部存储引用、createdAt；当前每书一个原件即可，hash/大小可核验，存储引用不暴露给客户端；显示书名编辑后展示名与存储引用同步更新，sha256 不变 |
+| book_metadata | bookId、title、authors、subtitle、coverResourceId、索引版本/提取状态；提取元数据/作者编辑不纳入当前范围，显示书名由 `PATCH /books/{bookId}` 维护 |
 | app_settings | group、schemaVersion、value、revision、updatedAt；每组一行，持久化默认/用户值来源可区分 |
 | book_reader_overrides | bookId、fileVersion、schemaVersion、稀疏overrides、revision、updatedAt；不拷贝全局快照 |
 | reading_progress | bookId、fileVersion、format、locatorType、locatorPayload、progressPercent、updatedAt、revision；位置与样式版本分离 |
@@ -87,6 +89,14 @@ CSRF协议：客户端先GET auth/status；未登录时创建短期预认证Http
 SQLite迁移版本化并使用事务；启用外键、busy_timeout及适合部署的WAL。三个存储根`/data/books`、`/data/db`、`/data/cache`可配置，规范化后不得相同/相互包含，不允许缓存清理或静态路由越界。配置失败阻止启动而非默默换目录。备份停止写入或使用经验证的一致性机制，不能只拷贝活跃WAL库主文件就宣称备份完整。
 
 最小BookDTO：`{bookId,title,authors:[],format,byteSize,status,cover,progress,readingCapabilities,createdAt,updatedAt}`；cover为null或`{href,mediaType,width,height}`，href指向该书经认证的受限派生资源，未提取时返回null而非假封面。progress为null或`{progressPercent,updatedAt}`。readingCapabilities为`{canRead,unavailableReason,features:[]}`，features只列已实现且格式实际支持的目录/搜索/设置等能力，不能给PDF字体能力。GET books返回200 `{data:BookDTO[],meta:{nextCursor,total}}`；空库是空数组，未实现服务不是假空库。GET book详情200在BookDTO上增加`fileVersion,originalFileName,extension,metadata,indexTaskId`，无记录404；这些信息不触发整本内容读取。
+
+### 4.1 原件下载与书名编辑
+
+**下载**：`GET/HEAD /books/{bookId}/download` 要求有效会话；GET/HEAD 不要求 CSRF。响应为当前登记的原件字节，`Content-Type` 取 `book_files.media_type`（空则`application/octet-stream`），`Content-Disposition: attachment`，文件名为`displayTitle + "." + extension`；使用 `mime.FormatMediaType` 编码，中文/非ASCII名走`filename*`。响应带强`ETag: "<sha256>"`、`Cache-Control: private, no-cache`、`Accept-Ranges: bytes`；GET/HEAD/Range/304由标准库`ServeContent`处理，HEAD只描述完整表示。文件名必须替换`/ \ : * ? " < > |`、NUL与控制字符，折叠空白并去掉首尾点和空格；空结果用`book-<bookId>`，扩展名小写。未知书/文件缺失404，未认证401，方法非GET/HEAD返回405且`Allow: GET, HEAD`；登记大小与实际文件不一致等存储异常返回503 `storage_unavailable`，错误体不包含绝对路径或SQL。该端点与PDF `/versions/{fileVersion}/content`相互独立，后者header语义不变。
+
+**书名编辑**：`PATCH /books/{bookId}`，请求体为严格JSON `{"title":"..."}`，最多64 KiB，只接受`title`；要求CSRF与同源校验。`title`服务端trim后必须为1–500个Unicode字符，拒绝NUL、控制字符与非法UTF-8；空/纯空白/超长/控制字符/非法UTF-8/未知字段/类型不符等**语义校验**统一返回422 `invalid_request`，`details`至少含`field`与`reason`（如`title/required`、`title/too_long`、`title/control_character`、`title/invalid_utf8`、`title/invalid_type`、`extra/unknown_field`）；JSON语法错误返回400，超限413 `payload_too_large`，非JSON Content-Type仍为415 `unsupported_media_type`。未知书404；`books.status=indexing`返回409 `state_conflict`、`details.reason=index_in_progress`，避免与索引读取原件竞争；允许书名重复。成功200返回完整BookDetail。
+
+服务端把`book_files.storage_rel_path`原子重命名为`bookId/<安全书名>.<原扩展名>`：安全规则同上并UTF-8截断到约200字节；目标已存在时追加` (2)`、` (3)`…，绝不覆盖其他文件，保留原权限。随后在一个事务内更新`books.display_title`、`books.updated_at`、`book_files.original_file_name`与`book_files.storage_rel_path`；文件移动成功而数据库失败时把文件移回旧路径并返回500。`fileVersion`仍是内容SHA-256，不因改名变化；所有阅读、下载、重索引读者只使用数据库登记的`storage_rel_path`，不得从SHA重新拼`<sha>.<ext>`。上传初始命名仍为`bookId/<sha256>.<ext>`，旧书保持哈希名直到显式改名，不做批量迁移。改名与下载在服务内串行化，下载要么打开旧路径要么打开新路径，不返回瞬时404。
 
 ## 5. 上传、后台任务与原件边界
 
@@ -101,7 +111,7 @@ SQLite迁移版本化并使用事务；启用外键、busy_timeout及适合部�
 - 已允许导入的书籍格式若暂不支持阅读、受DRM限制或解析失败，原件保留且明确不可读状态；真正危险/错误类型上传可以拒绝。支持格式清单与大小/归档预算在实现配置和错误中明确公布，不靠文件扩展名猜安全。
 - 取消与原件最终提交通过同一意图状态锁/提交检查互斥；取消先赢则不能再stored，提交先赢则取消返回409 `upload_completed`。取消awaiting/uploading/failed只清该临时文件，200返回cancelled意图；再次取消仍200。stored/duplicate不可取消，不能借取消删除原件；其派生任务可另行取消。
 
-上传GET与content/cancel返回统一UploadDTO：`{schemaVersion:1,uploadId,clientUploadId,fileName,expectedSize,bytesReceived,state,bookId,duplicateOfBookId,taskId,error,createdAt,updatedAt}`，未产生的关联字段为null，error为null或`{code,message,retryable}`；GET成功200、缺记录404。预留201也返回同DTO；同clientUploadId再次预留返回200既有DTO。对failed重试content会从零写临时文件；终态重复content返回409并提示GET，不能自动新建意图。
+上传GET与content/cancel返回统一UploadDTO：`{schemaVersion:1,uploadId,clientUploadId,fileName,expectedSize,bytesReceived,state,bookId,duplicateOfBookId,taskId,error,createdAt,updatedAt}`，未产生的关联字段为null，error为null或`{code,message,reason?,retryable}`；reason为失败稳定原因，仅已知时出现，与错误包络的`details.reason`一致；GET成功200、缺记录404。预留201也返回同DTO；同clientUploadId再次预留返回200既有DTO。对failed重试content会从零写临时文件；终态重复content返回409并提示GET，不能自动新建意图。
 
 后台任务state为`queued/running/succeeded/failed/cancelled`，progress为`{phase,completedUnits,totalUnits}`，未知totalUnits为null。TaskDTO为`{schemaVersion:1,taskId,kind,bookId,state,attempt,revision,cancellationRequested,progress,error,createdAt,updatedAt}`；error为null或`{code,message,retryable}`。GET200返回TaskDTO、未知404；retry输入`{baseRevision}`，仅failed或cancelled且retryable时202返回attempt递增的新queued DTO；过时/在途重复409。
 
@@ -156,13 +166,15 @@ ETag/Last-Modified及条件判断以[RFC9110 §13–14](https://httpwg.org/specs
 
 服务端对同一请求中同时显式给出的`#rrggbb`颜色对执行WCAG 2.1校验：`reflow.text`/`reflow.background`、`reflow.link`/`reflow.background`、`reflow.selection`（背景）/`reflow.text`（前景）对比度均须≥4.5:1；预设名、`inherit`及未同时给出的继承值不在服务端计算。不足返回422 `invalid_request`，`details`含`field`、`pair`、`foreground`、`background`、`ratio`、`minimum`；保存和读取边界都拒绝非法值，不静默应用。
 
-文字字段至少fontFamily/publisherFont、fontSize/weight、lineHeight、paragraphSpacing、textIndent/align、horizontal/verticalMargin、maxWidth、pagination/scroll、columns、animation、background/text/link/selection、publisherCSSMode；PDF分layoutMode(single/continuous/horizontal)与zoomMode(fit-width/fit-page/manual)，manualScale存比例，fit的effectiveScale仅计算；另有gap/background/toolbarVisible，双页P1。漫画有direction、single/double/continuous、fit-screen/fit-width/original、gap/background。PDF不伪改内嵌字号/行高，反色默认关闭并提示失真。
+文字字段至少fontFamily/publisherFont、fontSize/weight、lineHeight、paragraphSpacing、textIndent/align、horizontal/verticalMargin、maxWidth、pagination/scroll、columns、animation、background/text/link/selection、publisherCSSMode；PDF分layoutMode(single/continuous/horizontal)与zoomMode(fit-width/fit-page/manual)，manualScale存比例，fit的effectiveScale仅计算；另有gap/background，双页P1。PDF无显式覆盖时默认`zoomMode="manual"`、`manualScale=1.0`（100%），`fieldSources`标`built-in`；旧数据或旧客户端提交的`fit-width`仍原样读取、不自动改写。服务端保留已废弃的toolbarVisible字段仅用于旧JSON兼容校验，前端不再读取、发送或据此渲染中间工具栏。漫画有direction、single/double/continuous、fit-screen/fit-width/original、gap/background。PDF不伪改内嵌字号/行高，反色默认关闭并提示失真。
 
 设备预加载值不是三级阅读偏好的字段：只写本机`iread.device-preferences.v1`的schemaVersion/preloadProfile，按origin/浏览器存储分区生效；服务器全局reader和单书overrides拒绝该字段，避免跨设备覆盖。各端可选不同档，失败保留会话内选择；详见ui-design第10节。
 
-settings组使用本节value包络；单书覆盖使用明确的领域DTO例外：GET返回200 `{data:{schemaVersion:1,bookId,fileVersion,revision,updatedAt,overrides,effectiveValues,fieldSources,globalRevision,builtInVersion}}`，fieldSources逐字段为built-in/global/book。尚无覆盖时overrides为空对象、revision为"0"、updatedAt为null；effectiveValues仍按当前默认解析。
+settings组使用本节value包络；单书覆盖使用明确的领域DTO例外：`GET/PUT`按查询参数`profile=web|mobile`返回该视口的稀疏覆盖与继承结果，省略`profile`默认`web`，非法值422 `invalid_request`且`details.field=profile`。GET返回200 `{data:{schemaVersion:1,bookId,fileVersion,profile,revision,updatedAt,overrides,effectiveValues,fieldSources,globalRevision,builtInVersion}}`，fieldSources逐字段为built-in/global/book。尚无覆盖时overrides为空对象、revision为"0"、updatedAt为null；effectiveValues仍按当前默认解析。全局reader设置仍只有一份，单书覆盖按web（视口≥768px）与mobile（<768px）两套profile隔离。
 
-PUT单书覆盖的精确输入为`{schemaVersion:1,fileVersion,baseRevision,overrides}`，无额外value层，成功200返回与GET相同DTO及新revision/updatedAt。fileVersion与该书当前原件不符409，未知/不支持字段422，过时baseRevision409且不写；字段缺省表示移除该覆盖，null拒绝，不能把effectiveValues整体写回。“恢复此书默认”提交空overrides或删选定覆盖；“设为全局默认”显式写对应全局组，不隐式删除其他书覆盖。字段同事务提交，继承全局变化只重算effectiveValues，不伪增单书revision。
+单书存储JSON为`{"schemaVersion":1,"profiles":{"web":{...},"mobile":{...}}}`，两profile共享同一本书的revision与CAS；客户端只提交group overrides，`profiles`不是可提交字段。读取无`profiles`的旧版顶层`{reflow,pdf,comic}`时，该值作为两个profile的回退；首次按profile写入时复制到两个profile并只替换目标profile，另一profile不丢数据。旧客户端无`profile`按`web`处理，不破坏`mobile`。
+
+PUT单书覆盖的精确输入为`{schemaVersion:1,fileVersion,baseRevision,overrides}`，无额外value层，成功200返回与GET相同DTO及新revision/updatedAt；`profile`只来自查询参数，PUT只替换该profile，另一profile与共享revision一起保留。fileVersion与该书当前原件不符409，未知/不支持字段422，过时baseRevision409且不写；字段缺省表示移除该覆盖，null拒绝，不能把effectiveValues整体写回。“恢复此书默认”提交空overrides或删选定覆盖；“设为全局默认”显式写对应全局组，不隐式删除其他书覆盖。字段同事务提交，继承全局变化只重算effectiveValues，不伪增单书revision。
 
 客户端先应用当前选择/本地镜像，再防抖串行保存；每次编辑有本机mutation序号，迟到响应只能确认自己的序号，不能替换新预览。断网/存储失败有不同提示，保留未保存值；重新登录/联网先读服务端revision再对账，冲突显示选择而不自动改baseRevision覆盖。载入服务器值是显式放弃本地待同步编辑；重试保存保留用户意图并明确基于最新记录。布局变化按稳定locator恢复原文，不能用重排缓存的旧页号当位置。
 
@@ -232,7 +244,7 @@ SW预缓存仅包含版本化Shell静态资产和本地安装图标；API、原�
 
 ### 13.1 数据库与迁移
 
-- 沿用 `schema_migrations` 与 `app_settings`，`0001_init.sql` 不改写；新增 `0002_auth.sql`（`users`、`sessions`、`auth_contexts`）和 `0003_library.sql`（`books`、`book_files`、`book_metadata`、`background_tasks`、`upload_intents`）。
+- 沿用 `schema_migrations` 与 `app_settings`，`0001_init.sql` 不改写；新增 `0002_auth.sql`（`users`、`sessions`、`auth_contexts`）和 `0003_library.sql`（`books`、`book_files`、`book_metadata`、`background_tasks`、`upload_intents`）；`0005_upload_error_reason.sql` 为 `upload_intents` 增加可空 `error_reason`，旧行保持 NULL。
 - 每个迁移文件在独立事务中执行并在同一事务登记版本；失败整文件回滚，不登记版本。重复启动只跳过已登记版本，旧库升级必须保留 `app_settings` 与既有外观数据。
 - 所有时间列为 UTC RFC3339Nano 文本；API 输出仍按第1节使用 UTC RFC3339。SQLite 开启 `foreign_keys=1`、`busy_timeout(5000)`、WAL；阶段2保持单进程/单连接写入假设。
 - `users.id` 固定为 `admin`，`password_scheme` 固定为 `argon2id`。`sessions.id`/`auth_contexts.id` 保存原始 cookie token 的 SHA-256 hex（64 字符，服务端生成小写），不保存原始 token。`books.id`、`background_tasks.id`、`upload_intents.id` 为 32 位 hex。
@@ -263,9 +275,9 @@ SW预缓存仅包含版本化Shell静态资产和本地安装图标；API、原�
 - 意图状态机：`awaiting-upload → uploading → stored|duplicate|failed|cancelled|expired`。stored/duplicate/cancelled/expired 为终态；failed 的 content 重试从头写临时文件；stored/duplicate 再发 content 返回 409 并提示 GET；无断点续传、无 offset/chunk 提交。
 - 取消：`awaiting-upload`/`uploading`/`failed` 可转 `cancelled` 并清理临时文件，重复取消返回 200；`stored`/`duplicate` 返回 409 `upload_completed`，不得借取消删除原件。取消与最终提交使用同一状态锁/提交检查互斥，取消先赢则不能再 stored，提交先赢则取消 409。
 - 校验限制：ZIP 条目 ≤20,000；总解压量 ≤4 GiB；单条目 ≤1 GiB；`uncompressed > 16 MiB && ratio > 100:1` 拒绝；归档路径 ≤1024 字节且拒绝绝对路径、`..`、盘符和 NUL；图片 ≤1 亿像素且单边 ≤32,767；校验超时 60 秒。EPUB/CBZ 必须通过 ZIP 安全检查，PDF 必须通过结构解析；加密/DRM 的 EPUB/PDF 仍保存原件但标记 `unsupported`，不是 422，也不排 `book.index` 任务。
-- 阶段2格式校验边界：EPUB 需 ZIP 签名、`mimetype` 以 stored 方式存在、`container.xml` 与 OPF 可解析；PDF 需 `%PDF-` 签名且 xref/trailer/页数可解析，无渲染器时封面为 null；CBZ 需 ZIP 安全、图片可按自然序识别且通过像素限制，首图可作为封面来源；任何格式都不得修改或转换原件字节。
+- 阶段2格式校验边界：EPUB 需 ZIP 签名、`mimetype` 存在且解压后严格等于 `application/epub+zip`（允许被压缩或不在首个条目，读取上限 64 字节）、`container.xml` 与 OPF 可解析；PDF 需 `%PDF-` 签名且 xref/trailer/页数可解析，无渲染器时封面为 null；CBZ 需 ZIP 安全、图片可按自然序识别且通过像素限制，首图可作为封面来源；任何格式都不得修改或转换原件字节。
 - CBR 阶段2只验证 RAR4/RAR5 签名与文件大小；通过后保存原件并标记 `unsupported`，不创建 `book.index` 任务、不做深度 RAR 解析、不生成页面、不宣称可读。深度 RAR 解析和漫画阅读属于阶段6。
-- 上传/校验错误使用第1节统一包络：413 `payload_too_large`；扩展名、声明媒体类型或请求形态不受支持为 415 `unsupported_media_type`；允许格式的内容签名不符、容器损坏或安全校验失败为 422 `invalid_file`，`details.reason` 仅限 `server/internal/formats` 已定义的白名单：`mime_mismatch`、`empty_file`、`corrupt_container`、`encrypted_archive`、`archive_path_traversal`、`archive_symlink`、`archive_entry_limit`、`archive_uncompressed_limit`、`archive_compression_ratio`、`image_pixel_limit`、`pdf_encrypted`、`parser_timeout`。`extension_not_allowed` 由上传层映射为 415，不出现在 422；未知 reason 不得由实现临时扩展。
+- 上传/校验错误使用第1节统一包络：413 `payload_too_large`；扩展名、声明媒体类型或请求形态不受支持为 415 `unsupported_media_type`；允许格式的内容签名不符、容器损坏或安全校验失败为 422 `invalid_file`，`details.reason` 仅限 `server/internal/formats` 已定义的白名单：`mime_mismatch`、`empty_file`、`corrupt_container`、`encrypted_archive`、`archive_path_traversal`、`archive_symlink`、`archive_entry_limit`、`archive_uncompressed_limit`、`archive_compression_ratio`、`image_pixel_limit`、`pdf_encrypted`、`parser_timeout`。`extension_not_allowed` 由上传层映射为 415，不出现在 422；未知 reason 不得由实现临时扩展。422 校验失败必须把同一 reason 写入 `upload_intents.error_reason`，记录不含内容/绝对路径的 WARN 日志，并在 GET UploadDTO 的 `error.reason` 中返回；重试、取消、提交或转为其他失败时清空该字段，旧记录 NULL 必须可读。
 
 ### 13.4 封面端点
 
@@ -352,9 +364,9 @@ SW预缓存仅包含版本化Shell静态资产和本地安装图标；API、原�
 
 ### 14.6 单书阅读设置
 
-- 三级继承为 built-in → 全局 `app_settings.reader` → 本书 `book_reader_overrides`；单书只存稀疏覆盖，缺字段继承，`null` 拒绝，空对象表示恢复本书默认。全局变化只重算 `effectiveValues/fieldSources`，不增加单书 revision。
-- GET 无记录返回 `{schemaVersion:1,bookId,fileVersion,revision:"0",updatedAt:null,overrides:{}}`；`fileVersion` 由 DTO 按当前原件补齐，`effectiveValues/fieldSources/globalRevision/builtInVersion` 由设置解析层补齐。
-- PUT 输入 `{schemaVersion:1,fileVersion,baseRevision,overrides}`；`fileVersion` 与当前原件不符返回 409 `file_version_conflict`；未知/不支持字段或 `null` 返回 422；过时 baseRevision 返回 409 `revision_conflict` 并带 current；成功 revision 递增 1 并返回与 GET 相同 DTO。不把 `effectiveValues` 整体写回单书。
+- 三级继承为 built-in → 全局 `app_settings.reader` → 本书 `book_reader_overrides` 的指定profile；单书只存稀疏覆盖，缺字段继承，`null` 拒绝，空对象表示恢复该profile的本书默认。全局变化只重算 `effectiveValues/fieldSources`，不增加单书 revision。全局设置仍只有一份，单书覆盖按 web（视口≥768px）与 mobile（<768px）两套 profile 隔离；两 profile 共享同一 book revision 与 CAS。
+- GET 无记录返回 `{schemaVersion:1,bookId,fileVersion,profile:"web",revision:"0",updatedAt:null,overrides:{}}`；`profile` 省略默认 `web`，非法值 422；`fileVersion` 由 DTO 按当前原件补齐，`effectiveValues/fieldSources/globalRevision/builtInVersion` 由设置解析层补齐。存储JSON为`{"schemaVersion":1,"profiles":{"web":{...},"mobile":{...}}}`；无`profiles`的旧版顶层覆盖同时作为两profile的回退。
+- PUT 输入 `{schemaVersion:1,fileVersion,baseRevision,overrides}`，`profile` 来自查询参数且只替换该profile；旧客户端无`profile`按`web`处理，另一profile原样保留。首次按profile写入时把旧版顶层覆盖复制到两profile。`fileVersion` 与当前原件不符返回 409 `file_version_conflict`；未知/不支持字段、`profiles`信封或 `null` 返回 422；过时 baseRevision 返回 409 `revision_conflict` 并带当前profile的 current；成功 revision 递增 1 并返回与 GET 相同 DTO。不把 `effectiveValues` 整体写回单书。
 - store 只接受 schemaVersion 1 的 JSON 对象；`overrides` 任意层级出现 `null`、数组/标量或尾随内容均拒绝。设备预加载档位不属于此表，仍只写本机 `iread.device-preferences.v1`。
 
 ### 14.7 Revision、时间与错误码
@@ -367,7 +379,7 @@ SW预缓存仅包含版本化Shell静态资产和本地安装图标；API、原�
 
 ## 2026-11-10 内部阅读器修订约束
 
-复用现有reader-settings/settings/reader与revision协议，不新增HTTP或SQLite字段。版本化本机设置草稿仅含bookId/fileVersion、用户改动/待同步值、baseRevision与本机世代，不含密码/会话凭据。默认自动保存仅写book；global由显式动作写本次用户字段，不被自动清空或覆盖。重置废弃旧世代，迟到响应不能盖新选择。EPUB事件桥与PDF活动命中属于内部适配器类型，不放宽内容安全或改变资源按需边界。
+复用现有reader-settings/settings/reader与revision协议，不新增HTTP路径或SQLite字段；单书web/mobile profile复用既有`book_reader_overrides.overrides_json`信封存储。版本化本机设置草稿仅含bookId/fileVersion、用户改动/待同步值、baseRevision与本机世代，不含密码/会话凭据。默认自动保存仅写book；global由显式动作写本次用户字段，不被自动清空或覆盖。重置废弃旧世代，迟到响应不能盖新选择。EPUB事件桥与PDF活动命中属于内部适配器类型，不放宽内容安全或改变资源按需边界。
 
 
 补充内部读取元数据：PDF清单总页数为0仅表示索引时未知，ReaderShell可在当前引擎ready后读取正式getPageCount，按engine/bookId/fileVersion所有权解析UI导航和locator，不回写HTTP/SQLite；换书、换版本或旧mount迟到结果不得覆盖当前文档。Slider标签接线限reader私有Root-ref适配，官方组件及模板守卫保持原样。

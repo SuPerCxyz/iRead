@@ -60,7 +60,7 @@ EPUB出版方CSS在隔离内容环境使用，PDF.js必要文字/注释层样式
 
 桌面沿用sidebar07的可折叠图标侧栏；不强行改为另一个Sidebar variant。平板仍使用同一已核验移动分界，分界以上沿用可折叠侧栏、按可用空间换行；不另创平板断点。手机用官方Sidebar Sheet和底栏，筛选/上传/阅读设置优先底部Drawer；不把整套桌面控件挤成一行。长标题换行/截断配可访问全名，书架手机通常2–3列、较宽视口自适应；列数属于业务书架密度，默认与可选范围见第10节，不改组件皮肤。
 
-所有页面使用动态视口和safe-area-inset，底栏/阅读工具栏不盖住内容或焦点。保留浏览器缩放，尊重prefers-reduced-motion。图标统一Lucide，纯装饰隐藏于辅助技术；图标按钮有中文aria-label，触控有效区继承官方组件/可访问变体，不缩成无法点击的小图标。
+所有页面使用动态视口和safe-area-inset；普通业务底栏不盖住内容或焦点，桌面阅读工具栏占布局，手机阅读工具栏按第8节悬浮在正文上方并保留安全区。保留浏览器缩放，尊重prefers-reduced-motion。图标统一Lucide，纯装饰隐藏于辅助技术；图标按钮有中文aria-label，触控有效区继承官方组件/可访问变体，不缩成无法点击的小图标。
 
 路由状态：搜索/筛选/排序进入URL；书库视图/密度在LibraryViewSettings；列表滚动、打开来源和焦点锚点按history条目保存。进入详情记录from地址/选中bookId，返回恢复同筛选和滚动；深链接没有来源则回书库。缓存数据立即显示、背景刷新不替换成全屏Skeleton。404使用Empty、回首页/书库按钮；API失败使用Alert+有效重试，不把错误显示成空库。
 
@@ -84,7 +84,7 @@ EPUB出版方CSS在隔离内容环境使用，PDF.js必要文字/注释层样式
 
 区域：标题“书库”/真实结果数（未知不显示假数）→Input搜索、Select格式/阅读状态/排序、ToggleGroup网格/列表、上传Button→封面结果→Pagination或虚拟列表。桌面工具按可用宽度排列；手机搜索保留主区，筛选/排序进入官方Drawer，应用后显示有效筛选摘要及“清除筛选”。URL与contracts的q/format/readingState/sort/cursor/limit保持一致，改变筛选重置游标，不清掉已进行上传。
 
-网格项使用AspectRatio、标题、可选作者、格式Badge、阅读中Progress；列表使用官方Item组件，同样的信息和入口。卡片显隐/比例/间距取LibraryViewSettings。封面点进详情，继续操作直达已读位置；嵌套操作不得让一次点击同时打开详情和阅读器。1000–3000本由分页/Virtual限制实际挂载，封面只请求受限缩略图。
+网格项使用AspectRatio、标题、可选作者、格式Badge、阅读中Progress；列表使用官方Item组件，同样的信息和入口。卡片显隐/比例/间距取LibraryViewSettings。封面点进详情，继续操作直达已读位置；嵌套操作不得让一次点击同时打开详情和阅读器。卡片/列表项提供“下载原件”操作，文件名使用显示书名+原扩展名；详情页提供下载与“编辑书名”。1000–3000本由分页/Virtual限制实际挂载，封面只请求受限缩略图。
 
 空库显示“书库还没有图书”；有筛选但空结果显示“没有匹配的图书”及真实清除筛选；服务/权限错误不能显示前两种空态。（历史阶段1约定）阶段1图书服务未接入时明确“图书功能尚未接入”，不提供会假成功的上传/搜索/继续按钮；当前书库已接入，该未接入分支不适用。
 
@@ -103,15 +103,15 @@ EPUB出版方CSS在隔离内容环境使用，PDF.js必要文字/注释层样式
 
 ## 7. 详情 `/books/:id`
 
-Breadcrumb返回来源书库；主区用官方Card/AspectRatio/Item/Badge/Separator组合：真实封面、标题、作者/副标题、格式、原始文件名/大小、处理状态、最近位置摘要和主阅读操作。桌面图文并排，手机按封面→元数据→主操作顺序自然堆叠；不强制请求全书。
+Breadcrumb返回来源书库；主区用官方Card/AspectRatio/Item/Badge/Separator组合：真实封面、标题、作者/副标题、格式、原始文件名/大小、处理状态、最近位置摘要和主阅读操作；下载与编辑书名作为次级操作放在同一操作区。桌面图文并排，手机按封面→元数据→主操作顺序自然堆叠；不强制请求全书。
 
 ready显示“开始阅读”或“继续阅读”；indexing显示任务阶段/Progress，允许查看/取消符合契约的派生任务；error给真实原因和retryable时“重试整理”；unsupported说明原件已保留但当前不能阅读/DRM限制。取消索引后应显示可重试的error态，不能永久Loading；404用Empty+返回书库。版本/会话失配停止读取旧资源并提示重新载入，不能悄悄换一本书。
 
-不放原件下载、删除、元数据编辑或转换按钮，因未获产品确认。返回需恢复筛选/滚动/焦点；从外部深链接进详情则返回书库。阅读前只查manifest/locator，不下载全书准备另一个确认弹窗。
+详情页提供“下载原件”和“编辑书名”：下载走`GET/HEAD /books/{id}/download`，以真实显示书名+原扩展名给出文件名，不用阅读流冒充；编辑书名提交`PATCH /books/{id}`，成功后刷新标题、原始文件名与下载名，索引中返回409时提示稍后重试。不提供删除、格式转换或提取元数据编辑。返回需恢复筛选/滚动/焦点；从外部深链接进详情则返回书库。阅读前只查manifest/locator，不下载全书准备另一个确认弹窗。
 
 ## 8. 沉浸阅读 `/read/:id`
 
-阅读路由独立于Sidebar/Breadcrumb/手机底栏，阅读内容占当前动态视口。顶部/底部工具栏按需出现，均用官方Button/Tooltip/Badge/Input/Slider组合，背景/边界沿用官方token；不得另做玻璃/渐变皮肤。工具栏包括返回来源、书名/状态、目录、格式允许的搜索、阅读设置、位置/跳转、全屏；不存在能力的按钮不显示。
+阅读路由独立于Sidebar/Breadcrumb/手机底栏，阅读内容占当前动态视口。桌面顶部/底部各只保留一行工具栏并占布局，均用官方Button/Tooltip/Badge/Input/Slider组合，背景/边界沿用官方token；不得另做玻璃/渐变皮肤。手机（<768px）顶/底工具栏改为相对Shell的绝对定位悬浮卡片：左右8px+safe-area，顶部/底部8px+safe-area，约90%背景+14px backdrop blur，圆角、边框和阴影，z-index 20；不支持backdrop-filter时退回不透明背景。手机正文区始终flex:1铺满Shell并保留上下safe-area，工具栏显隐不改变正文高度、不触发重排；默认显示，点击正文中部显隐，不做自动隐藏。手机底栏只显示上一页、页码/进度、下一页、进度条（分页格式）、⋯；放大/缩小、适宽/适页、布局、旋转、跳页全部收进“⋯”Sheet，底栏不得出现可见缩放按钮。PDF引擎不创建自己的中间工具栏，所有PDF操作由共享Shell承载。工具栏包括返回来源、书名/状态、目录、格式允许的搜索、阅读设置、位置/跳转、全屏；不存在能力的按钮不显示。
 
 桌面目录/设置用官方Sheet，手机用官方Drawer底部面板，标题/说明、焦点约束/恢复和关闭控件保持官方行为。目录面板用Tabs分“目录/书签”，ScrollArea承载条目，当前项标识和滚入可见；设置按第9–10节分组。一次只开一个阅读面板，切换不叠全屏模态、不重建会话。已有缓存页先展示，单资源失败局部占位+重试，不以整屏Loading覆盖已有正文。
 
@@ -123,9 +123,9 @@ ready显示“开始阅读”或“继续阅读”；indexing显示任务阶段/
 | PDF | URL/Worker/真实Range，可视Canvas+文字/注释层；文本搜索/选中复制、目录/跳页/缩放 | 显示真实page/pageCount；远跳优先新页，旧请求取消；恢复页内offset与视图，禁止内嵌字体伪设置 |
 | CBZ/CBR | 服务器按页图像、自然排序；方向/单双页/连续/适应模式 | 显示真实页码，按书恢复方向/模式；大图解码/缓存受限，不下载整包 |
 
-手机中区轻触切工具栏、两侧点击翻页，只在单点且未滚动/选择/缩放时触发；点击区域由实际阅读Rect/模式计算，不在组件写死设计尺寸。多点触控优先PDF缩放，最后一个指针释放前不恢复点击翻页；长按选择、链接、交互控件和纵向滚动不触发导航。Drawer拖动交给官方组件，正文滚动与抽屉拖动互不抢占；不全站禁浏览器缩放。
+手机中区轻触切工具栏、两侧点击翻页，只在单点且未滚动/选择/缩放时触发；点击区域由实际阅读Rect/模式计算，不在组件写死设计尺寸。双指进入整体缩放：Shell只仲裁手势并把中心/倍率交给当前引擎，PDF缩放页面、漫画缩放图片、EPUB缩放整页而非字号；双指期间不翻页/不切工具栏，结束后200ms内抑制click/tap。阅读内容区以非被动touchmove及Safari gesturestart/gesturechange抑制浏览器原生捏合，工具栏及其他页面保留浏览器缩放，不设置全局user-scalable=no。长按选择、链接、交互控件和纵向滚动不触发导航。Drawer拖动交给官方组件，正文滚动与抽屉拖动互不抢占。
 
-快捷键：左右翻页、Esc关闭最上层面板（没有面板才退出阅读）、F全屏、S目录、`/`搜索；输入/可编辑区域不抢键，可配置并提示浏览器不支持的全屏等能力。退出先本地保存并尽力提交，再返回来源；离线/同步失败显示“已保存在本机，等待同步”，不能称跨端已保存。旋转/地址栏收缩/工具栏出现按locator保持位置，不反复开书。
+快捷键：左右翻页、Esc关闭最上层面板（没有面板才退出阅读）、F全屏、S目录、`/`搜索；PDF 可搜索时 Ctrl/Cmd+F 由 Shell 接管并打开搜索面板，阻止浏览器默认查找。输入/可编辑区域不抢键，可配置并提示浏览器不支持的全屏等能力。退出先本地保存并尽力提交，再返回来源；离线/同步失败显示“已保存在本机，等待同步”，不能称跨端已保存。旋转/地址栏收缩/工具栏出现按locator保持位置，不反复开书。
 
 ## 9. 设置 `/settings` 与三级阅读偏好
 
@@ -154,13 +154,13 @@ PWA更新使用官方Alert/通知提示，阅读时只有“退出阅读后更�
 | reflow typesetting | fontSize 12–48px、weight仅实际字体支持100–900、lineHeight 1.2–2.4无单位、paragraphSpacing 0–3em、indent 0–2em；对齐start/justify | 跟随出版方/已解析全局值；首次控件显示实际解析值 |
 | reflow page | 左右margin 0–12vw、上下0–12vh，maxWidth auto或40–100ch且限视口；pagination/scroll、1/可用时2栏、none/light动画 | 当前格式默认/出版方，改变后保持locator |
 | reader colors/CSS | 背景/文字/链接/选择色为官方预设或经对比度验证的用户颜色；publisher/user CSS优先 | 当前主题/出版方；不允许活动脚本或任意CSS注入主应用 |
-| PDF | layoutMode=single/continuous/horizontal；zoomMode=fit-width/fit-page/manual，manualScale以比例0.25–4存储（UI25–400%）；页距官方spacing档位、toolbarVisible布尔 | 两维可组合；fit按实际视口算effectiveScale，双页P1，无正文font/lineHeight控件 |
+| PDF | layoutMode=single/continuous/horizontal；zoomMode=fit-width/fit-page/manual，manualScale以比例0.25–4存储（UI25–400%）；无显式覆盖时默认manual 100%；页距官方spacing档位 | 两维可组合；fit按实际视口算effectiveScale，双页P1，无正文font/lineHeight控件，无引擎中间工具栏 |
 | comic | LTR/RTL、single/double/continuous、fit-screen/fit-width/original；页距引用官方spacing档位 | 继承全局或单书；Webtoon/自动裁边P1 |
 | preload/device | data-saver/ balanced/fast对应节省1/1、均衡2/4、极速3/6候选窗口，版本化本机保存 | 初始balanced；不写全局reader/单书override，具体作用域见表后 |
 
 主题联动：用户选“暖纸/纯白”时设置对应lightPreset并显式切themeMode=light；选“深灰/深蓝黑”设置对应darkPreset并切dark，界面反馈模式变化。再选择system时按OS明暗解析各自已保存的preset，另一侧保留但不生效；比如先选深蓝黑再选system，OS浅色时使用lightPreset，OS深色时使用midnight，不存在同时套两组token。OS变化只更新计算态，不写用户revision；“模板默认”恢复当前明暗分支的template，恢复全部外观则两个preset均回template。ReaderGlobalSettings的阅读主题另可inherit-app或固定paper/white/gray/midnight；固定阅读主题只作用于正文，单书字段缺省继续三级继承。选择阅读预设会批量恢复该颜色组自定义覆盖，字段说明须提前说清，不能只改背景残留不匹配前景。
 
-PDF布局/缩放互相独立，可single+fit-width、continuous+manual或horizontal+fit-page；切layout保留页/页内锚点，fit模式按新视口重算，不能把manualScale当fit结果。手动缩放/双指缩放切zoomMode=manual并保存手动比例；fit时保留上次手动比例以便切回，但effectiveScale只由测量得到。手动输入边界不用于假截断fit布局，渲染分辨率另受预算控制；这两个字段和locator恢复一起对账。
+PDF布局/缩放互相独立，可single+fit-width、continuous+manual或horizontal+fit-page；切layout保留页/页内锚点，fit模式按新视口重算，不能把manualScale当fit结果。手动缩放/双指缩放切zoomMode=manual并保存手动比例；fit时保留上次手动比例以便切回，但effectiveScale只由测量得到。手动输入边界不用于假截断fit布局，渲染分辨率另受预算控制；这两个字段和locator恢复一起对账。单书视图偏好按web（视口≥768px）/mobile（<768px）profile隔离保存，两profile共享同一本书revision；新书默认manual 100%，旧进度locator自动写入的fit-width忽略，当前profile显式fit-width仍保留。视口变化只把尺寸通知引擎，不重新调用进度restore。
 
 设备预加载偏好仅保存在浏览器localStorage键`iread.device-preferences.v1`：`{schemaVersion:1,preloadProfile:"balanced"}`。作用域为同origin、同浏览器配置/存储分区；桌面、手机以及平台隔离的PWA各自可不同，不能承诺跨分区自动共享。它不进入app_settings.reader、BookReaderOverrides或跨端同步payload；同分区标签通过storage事件更新，改变档位只调整当前候选预取，不重置位置。存储失败提示“档位仅本次会话生效”，内存继续当前选择，不回写全局服务器设置。
 
