@@ -5,7 +5,7 @@ export interface AuthStatus {
   csrfExpiresAt: string | null
 }
 
-type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "DELETE"
+type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"
 type UnauthorizedListener = (error: ApiError) => void
 
 const AUTH_STATUS_ENDPOINT = "/api/v1/auth/status"
@@ -376,4 +376,12 @@ export function apiPut<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   return apiRequest<T>(path, { method: "PUT", body, signal })
+}
+
+export function apiPatch<T>(
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiRequest<T>(path, { method: "PATCH", body, signal })
 }

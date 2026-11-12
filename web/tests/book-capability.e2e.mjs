@@ -337,9 +337,31 @@ async function main() {
       (await continueLink.getAttribute("href")) ?? "",
       /^\/read\/pdf-continue$/,
     )
-    await page.getByText("上次阅读到 38%。", { exact: true }).waitFor({
-      timeout: 10000,
-    })
+    const continuedTopbar = page.locator(".iread-book__topbar")
+    assert.equal(
+      await continuedTopbar
+        .getByRole("link", { name: "继续阅读", exact: true })
+        .count(),
+      1,
+      "继续阅读入口应位于顶部操作区",
+    )
+    assert.equal(
+      await page.getByText("已整理完成", { exact: true }).count(),
+      0,
+      "可读状态下不再显示已整理完成卡片",
+    )
+    assert.equal(
+      await page.getByText(/^上次阅读到/).count(),
+      0,
+      "可读状态下不再显示重复的状态说明",
+    )
+    assert.equal(
+      await page
+        .getByRole("link", { name: /^(开始阅读|继续阅读)$/ })
+        .count(),
+      1,
+      "整页只允许一个开始/继续阅读入口",
+    )
 
     const unavailableCases = [
       {

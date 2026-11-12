@@ -114,6 +114,9 @@ func writeLibraryError(w http.ResponseWriter, r *http.Request, status int, code,
 
 func (h *LibraryHandlers) writeServiceError(w http.ResponseWriter, r *http.Request, apiErr *library.Error) {
 	details := map[string]any{}
+	if apiErr.Field != "" {
+		details["field"] = apiErr.Field
+	}
 	if apiErr.Reason != "" {
 		details["reason"] = apiErr.Reason
 	}

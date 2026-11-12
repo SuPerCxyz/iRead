@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   apiGet,
+  apiPatch,
   apiPut,
   clearCsrfToken,
   setCsrfToken,
@@ -106,6 +107,31 @@ describe("api client", () => {
       status: 0,
       code: "network_error",
     })
+  })
+
+  it("sends PATCH with JSON body and CSRF token", async () => {
+    setCsrfToken("csrf-patch")
+    let observedMethod: string | null = null
+    let observedToken: string | null = null
+    let observedBody: BodyInit | null | undefined = null
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        observedMethod = init?.method ?? null
+        observedToken = callHeaders(init)["X-CSRF-Token"] ?? null
+        observedBody = init?.body ?? null
+        return jsonResponse({ data: { title: "新书名" } })
+      }),
+    )
+
+    await expect(
+      apiPatch<{ title: string }>("/api/v1/books/book-1", {
+        title: "新书名",
+      }),
+    ).resolves.toEqual({ title: "新书名" })
+    expect(observedMethod).toBe("PATCH")
+    expect(observedToken).toBe("csrf-patch")
+    expect(observedBody).toBe(JSON.stringify({ title: "新书名" }))
   })
 
   it("retries a CSRF failure once with a refreshed token", async () => {

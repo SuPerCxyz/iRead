@@ -511,7 +511,7 @@ async function main() {
     )
     assert.ok(firstBook, "书库中应出现 E2E EPUB")
     await page
-      .getByRole("link")
+      .locator(".iread-book-card__link")
       .filter({ hasText: firstBook.title })
       .first()
       .click()
@@ -669,14 +669,11 @@ async function main() {
     await page
       .getByText("已重新提交整理任务。", { exact: true })
       .waitFor({ timeout: 10000 })
-    await page
-      .getByText("已整理完成", { exact: true })
-      .waitFor({ timeout: 60000 })
     const retriedStartLink = page.getByRole("link", {
       name: "开始阅读",
       exact: true,
     })
-    await retriedStartLink.waitFor({ timeout: 10000 })
+    await retriedStartLink.waitFor({ timeout: 60000 })
     assert.match(
       (await retriedStartLink.getAttribute("href")) ?? "",
       /^\/read\/[^/]+$/,

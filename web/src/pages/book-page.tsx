@@ -28,7 +28,10 @@ import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useAppearance } from "@/features/appearance/context"
-import { buttonSizeForDensity } from "@/features/appearance/model"
+import {
+  buttonSizeForDensity,
+  type AppearanceButtonSize,
+} from "@/features/appearance/model"
 import { useReturnNavigation } from "@/app/use-return-navigation"
 import {
   cancelBackgroundTask,
@@ -36,7 +39,13 @@ import {
   fetchBookDetail,
   retryBackgroundTask,
 } from "@/features/library/api"
+import { BookActions } from "@/features/library/components/book-actions"
 import { BookCover } from "@/features/library/components/book-cover"
+import {
+  bookAuthorsFor,
+  bookSubtitleFor,
+  detailFactRows,
+} from "@/features/library/components/book-info"
 import { readingEntryFor } from "@/features/library/components/book-reading"
 import {
   BOOK_STATUS_LABELS,
@@ -51,7 +60,6 @@ import { useLoginOnAuthError } from "@/features/library/hooks"
 import { libraryQueryKeys } from "@/features/library/query-keys"
 import {
   FORMAT_LABELS,
-  formatByteSize,
   formatProgressPercent,
   taskPhaseLabel,
   type BackgroundTask,
@@ -113,49 +121,82 @@ function DetailSkeleton() {
   )
 }
 
+function BookTopbar({
+  label,
+  onBack,
+  book,
+  buttonSize,
+}: {
+  label: string
+  onBack: () => void
+  book?: BookDetail
+  buttonSize: AppearanceButtonSize
+}) {
+  const entry = book === undefined ? null : readingEntryFor(book)
+  const readLink =
+    book !== undefined && entry?.kind === "readable"
+      ? {
+          label: entry.actionLabel,
+          to: `/read/${encodeURIComponent(book.bookId)}`,
+          state: {
+            from: `/books/${encodeURIComponent(book.bookId)}`,
+            scrollY: 0,
+          },
+        }
+      : null
+
+  return (
+    <div className="iread-book__topbar">
+      <Button
+        type="button"
+        size={buttonSize}
+        variant="ghost"
+        className="iread-book__back-button"
+        aria-label={label}
+        onClick={onBack}
+      >
+        <ArrowLeft aria-hidden="true" />
+        <span className="iread-book__back-label">{label}</span>
+      </Button>
+      {book !== undefined ? (
+        <div className="iread-book__topbar-actions">
+          {readLink !== null ? (
+            <Button asChild size={buttonSize}>
+              <Link to={readLink.to} state={readLink.state}>
+                {readLink.label}
+              </Link>
+            </Button>
+          ) : null}
+          <BookActions book={book} variant="inline" size={buttonSize} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function DetailFacts({ book }: { book: BookDetail }) {
-  const metadata = book.metadata
-  const authors =
-    book.authors.length > 0 ? book.authors : metadata?.authors ?? []
-  const rows: Array<{ label: string; value: string }> = [
-    { label: "格式", value: FORMAT_LABELS[book.format] },
-    { label: "文件大小", value: formatByteSize(book.byteSize) },
-    { label: "原始文件名", value: book.originalFileName },
-  ]
-  if (metadata !== null) {
-    if (metadata.pageCount !== null) {
-      rows.push({ label: "页数", value: String(metadata.pageCount) })
-    }
-    if (metadata.publisher !== null) {
-      rows.push({ label: "出版社", value: metadata.publisher })
-    }
-    if (metadata.language !== null) {
-      rows.push({ label: "语言", value: metadata.language })
-    }
-    if (metadata.publishedAt !== null) {
-      rows.push({ label: "出版时间", value: metadata.publishedAt })
-    }
-    if (metadata.identifier !== null) {
-      rows.push({ label: "标识", value: metadata.identifier })
-    }
-  }
+  const rows = detailFactRows(book)
 
   return (
     <div className="iread-book__metadata">
-      {authors.length > 0 ? (
-        <p className="iread-book__authors">{authors.join("、")}</p>
-      ) : null}
-      {metadata?.subtitle !== null && metadata?.subtitle !== undefined ? (
-        <p className="iread-book__subtitle">{metadata.subtitle}</p>
-      ) : null}
-      <dl className="iread-book__facts">
-        {rows.map((row) => (
-          <div className="iread-book__fact" key={row.label}>
-            <dt>{row.label}</dt>
-            <dd>{row.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <div className="iread-book__facts">
+        <section className="iread-book__facts-group">
+          <h2 className="iread-book__facts-title">书籍信息</h2>
+          <dl className="iread-book__facts-grid">
+            {rows.map((row) => (
+              <div
+                className={`iread-book__fact${
+                  row.wide ? " iread-book__fact--wide" : ""
+                }`}
+                key={row.key}
+              >
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      </div>
     </div>
   )
 }
@@ -403,23 +444,8 @@ export function BookPage() {
     }
 
     if (entry.kind === "readable") {
-      return (
-        <Card className="iread-book__status">
-          <CardHeader>
-            <CardTitle>
-              {book.status === "ready" ? "已整理完成" : "可以阅读"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="iread-book__status-content">
-            <p>{entry.description}</p>
-            <Button asChild size={buttonSize}>
-              <Link to={`/read/${encodeURIComponent(book.bookId)}`}>
-                {entry.actionLabel}
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )
+      // 可读图书的入口固定在顶部主按钮，不再重复展示“已整理完成”卡片。
+      return null
     }
 
     const copy = entry.copy
@@ -470,13 +496,13 @@ export function BookPage() {
   if (bookId === undefined) {
     return (
       <div className="iread-page">
+        <BookTopbar label={label} onBack={goBack} buttonSize={buttonSize} />
         <div className="iread-page__content">
           <PageEmpty
             icon={BookOpen}
             title="没有找到这本书"
             description="链接缺少书籍编号。"
             titleAsHeading
-            actions={[{ label: "返回书库", to: "/library" }]}
           />
         </div>
       </div>
@@ -486,6 +512,7 @@ export function BookPage() {
   if (bookQuery.isPending) {
     return (
       <div className="iread-page iread-book">
+        <BookTopbar label={label} onBack={goBack} buttonSize={buttonSize} />
         <div className="iread-page__content">
           <DetailSkeleton />
         </div>
@@ -496,6 +523,7 @@ export function BookPage() {
   if (bookQuery.isError) {
     return (
       <div className="iread-page iread-book">
+        <BookTopbar label={label} onBack={goBack} buttonSize={buttonSize} />
         <div className="iread-page__content">
           {isNotFound(bookQuery.error) ? (
             <PageEmpty
@@ -503,7 +531,6 @@ export function BookPage() {
               title="没有找到这本书"
               description="它可能已被移除，或链接不再有效。"
               titleAsHeading
-              actions={[{ label, onClick: goBack }]}
             />
           ) : (
             <QueryError
@@ -523,8 +550,17 @@ export function BookPage() {
     return null
   }
 
+  const subtitle = bookSubtitleFor(book)
+  const authors = bookAuthorsFor(book)
+
   return (
     <div className="iread-page iread-book">
+      <BookTopbar
+        label={label}
+        onBack={goBack}
+        book={book}
+        buttonSize={buttonSize}
+      />
       <div className="iread-book__layout">
         <div className="iread-book__cover">
           <BookCover book={book} variant="detail" />
@@ -538,6 +574,14 @@ export function BookPage() {
             >
               {book.title}
             </h1>
+            {subtitle !== null ? (
+              <p className="iread-book__subtitle">{subtitle}</p>
+            ) : null}
+            {authors.length > 0 ? (
+              <p className="iread-book__authors">
+                {authors.join("、")}
+              </p>
+            ) : null}
             <div className="iread-book__badges">
               <Badge variant="outline">{FORMAT_LABELS[book.format]}</Badge>
               <Badge variant={BOOK_STATUS_VARIANTS[book.status]}>
@@ -570,18 +614,6 @@ export function BookPage() {
           ) : null}
 
           {renderStatus()}
-
-          <div className="iread-book__back">
-            <Button
-              type="button"
-              size={buttonSize}
-              variant="ghost"
-              onClick={goBack}
-            >
-              <ArrowLeft aria-hidden="true" />
-              {label}
-            </Button>
-          </div>
         </div>
       </div>
     </div>

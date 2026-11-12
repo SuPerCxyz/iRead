@@ -367,11 +367,18 @@ export function LibraryPage() {
                       showFormat={view.value.showFormat}
                       showSubtitle={view.value.showSubtitle}
                       coverRatio={view.value.coverRatio}
+                      showActions
                     />
                   ))}
                 </div>
               ) : (
-                <ItemGroup className="iread-book-list">
+                <ItemGroup
+                  className="iread-book-list"
+                  data-show-format={view.value.showFormat}
+                  data-show-authors={view.value.showAuthors}
+                  data-show-progress={view.value.showProgress}
+                  data-show-subtitle={view.value.showSubtitle}
+                >
                   {books.map((book) => (
                     <BookListItem
                       key={book.bookId}
@@ -382,6 +389,7 @@ export function LibraryPage() {
                       showFormat={view.value.showFormat}
                       showSubtitle={view.value.showSubtitle}
                       coverRatio={view.value.coverRatio}
+                      showActions
                     />
                   ))}
                 </ItemGroup>

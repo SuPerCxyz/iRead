@@ -49,10 +49,12 @@ export function BookCover({
   const failed = href !== null && failedHref === href
   const hasImage = href !== null && !failed
   const className = `iread-book-cover iread-book-cover--${variant}`
+  const effectiveRatio =
+    variant === "grid" && ratio === "original" ? "2:3" : ratio
 
   return (
     <AspectRatio
-      ratio={ratioNumber(book, ratio)}
+      ratio={ratioNumber(book, effectiveRatio)}
       className={className}
       data-cover-state={hasImage ? "image" : "fallback"}
     >

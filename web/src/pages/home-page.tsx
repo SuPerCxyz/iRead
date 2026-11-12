@@ -110,18 +110,32 @@ export function HomePage() {
                 </h2>
                 <Card className="iread-home__continue">
                   <div className="iread-home__continue-cover">
-                    <BookCover book={continueBook} variant="grid" />
+                    <Link
+                      className="iread-home__continue-cover-link"
+                      to={`/read/${encodeURIComponent(continueBook.bookId)}`}
+                      state={{ from: "/", scrollY: 0 }}
+                      aria-label={`继续阅读《${continueBook.title}》`}
+                    >
+                      <BookCover book={continueBook} variant="grid" />
+                    </Link>
                   </div>
                   <CardHeader className="iread-home__continue-header">
                     <p className="iread-home__eyebrow">上次阅读</p>
-                    <CardTitle className="iread-home__continue-title">
-                      {continueBook.title}
-                    </CardTitle>
-                    {continueBook.authors.length > 0 ? (
-                      <p className="iread-home__continue-authors">
-                        {continueBook.authors.join("、")}
-                      </p>
-                    ) : null}
+                    <Link
+                      className="iread-home__continue-info-link"
+                      to={`/books/${encodeURIComponent(continueBook.bookId)}`}
+                      state={{ from: "/", scrollY: 0 }}
+                      aria-label={`查看《${continueBook.title}》详情`}
+                    >
+                      <CardTitle className="iread-home__continue-title">
+                        {continueBook.title}
+                      </CardTitle>
+                      {continueBook.authors.length > 0 ? (
+                        <p className="iread-home__continue-authors">
+                          {continueBook.authors.join("、")}
+                        </p>
+                      ) : null}
+                    </Link>
                   </CardHeader>
                   <CardContent className="iread-home__continue-content">
                     <div className="iread-home__continue-progress">
@@ -138,6 +152,8 @@ export function HomePage() {
                     <Button asChild size={buttonSize}>
                       <Link
                         to={`/read/${encodeURIComponent(continueBook.bookId)}`}
+                        state={{ from: "/", scrollY: 0 }}
+                        aria-label={`继续阅读《${continueBook.title}》`}
                       >
                         继续阅读
                       </Link>

@@ -1,4 +1,4 @@
-import { ApiError, apiGet, apiPost, isRecord } from "@/lib/api"
+import { ApiError, apiGet, apiPatch, apiPost, isRecord } from "@/lib/api"
 
 import {
   parseBackgroundTask,
@@ -146,6 +146,23 @@ export async function fetchBookDetail(
     signal,
   )
   return parseBookDetail(data)
+}
+
+export async function updateBookTitle(
+  bookId: string,
+  title: string,
+  signal?: AbortSignal,
+): Promise<BookDetail> {
+  const data = await apiPatch<unknown>(
+    `${BOOKS_ENDPOINT}/${encodeURIComponent(bookId)}`,
+    { title },
+    signal,
+  )
+  return parseBookDetail(data)
+}
+
+export function bookDownloadUrl(bookId: string): string {
+  return `${BOOKS_ENDPOINT}/${encodeURIComponent(bookId)}/download`
 }
 
 export async function fetchBackgroundTask(

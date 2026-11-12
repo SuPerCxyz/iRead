@@ -182,12 +182,24 @@ func (h *LibraryHandlers) handleBookItem(w http.ResponseWriter, r *http.Request)
 	bookID := parts[0]
 	switch {
 	case len(parts) == 1:
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET")
+		switch r.Method {
+		case http.MethodGet:
+			h.getBook(w, r, bookID)
+		case http.MethodPatch:
+			h.mutation(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				h.renameBook(w, r, bookID)
+			})).ServeHTTP(w, r)
+		default:
+			w.Header().Set("Allow", "GET, PATCH")
+			writeLibraryError(w, r, http.StatusMethodNotAllowed, "invalid_request", "请求方法不支持", nil)
+		}
+	case len(parts) == 2 && parts[1] == "download":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
 			writeLibraryError(w, r, http.StatusMethodNotAllowed, "invalid_request", "请求方法不支持", nil)
 			return
 		}
-		h.getBook(w, r, bookID)
+		h.downloadBook(w, r, bookID)
 	case len(parts) == 2 && parts[1] == "cover":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
@@ -218,6 +230,114 @@ func (h *LibraryHandlers) getBook(w http.ResponseWriter, r *http.Request, bookID
 	dto := bookDetailDTOFrom(detail)
 	dto.Progress = progressDTOFromSummary(detail.BookSummary)
 	writeLibraryData(w, http.StatusOK, dto)
+}
+
+const maxBookRenameBodyBytes int64 = 64 << 10
+
+type renameBookRequest struct {
+	Title *string `json:"title"`
+}
+
+// renameBook 修改显示书名，并同步把磁盘原件重命名为“安全书名 + 原扩展名”。
+func (h *LibraryHandlers) renameBook(w http.ResponseWriter, r *http.Request, bookID string) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeLibraryError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "仅支持 application/json", nil)
+		return
+	}
+	if r.ContentLength > maxBookRenameBodyBytes {
+		writeLibraryError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "请求体超过 64 KiB", nil)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBookRenameBodyBytes+1))
+	if err != nil {
+		writeLibraryError(w, r, http.StatusBadRequest, "invalid_request", "读取请求体失败", nil)
+		return
+	}
+	if int64(len(body)) > maxBookRenameBodyBytes {
+		writeLibraryError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "请求体超过 64 KiB", nil)
+		return
+	}
+	var request renameBookRequest
+	if err := decodeStrictJSON(body, &request); err != nil {
+		writeRenameDecodeError(w, r, err)
+		return
+	}
+	if request.Title == nil {
+		writeLibraryError(w, r, http.StatusUnprocessableEntity, "invalid_request", "缺少 title",
+			map[string]any{"field": "title", "reason": "required"})
+		return
+	}
+	detail, apiErr := h.service.RenameBook(r.Context(), bookID, *request.Title)
+	if apiErr != nil {
+		h.writeServiceError(w, r, apiErr)
+		return
+	}
+	dto := bookDetailDTOFrom(detail)
+	dto.Progress = progressDTOFromSummary(detail.BookSummary)
+	writeLibraryData(w, http.StatusOK, dto)
+}
+
+// downloadBook 流式返回当前登记的原件；文件名=显示书名+原扩展名。
+func (h *LibraryHandlers) downloadBook(w http.ResponseWriter, r *http.Request, bookID string) {
+	original, apiErr := h.service.OpenOriginal(r.Context(), bookID)
+	if apiErr != nil {
+		h.writeServiceError(w, r, apiErr)
+		return
+	}
+	defer original.File.Close()
+
+	w.Header().Set("Content-Type", original.MediaType)
+	w.Header().Set("Content-Disposition", attachmentContentDisposition(original.Name))
+	w.Header().Set("ETag", `"`+original.SHA256+`"`)
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Del("Content-Encoding")
+
+	// HEAD 只描述完整表示，不把 Range 当分页传输；GET 仍由 ServeContent
+	// 处理 Range/条件请求/304。
+	serveRequest := r
+	if r.Method == http.MethodHead {
+		serveRequest = r.Clone(r.Context())
+		serveRequest.Header.Del("Range")
+	}
+	http.ServeContent(w, serveRequest, original.Name, original.ModTime, original.File)
+}
+
+// attachmentContentDisposition 使用标准 MIME 参数编码；非 ASCII 文件名由
+// mime.FormatMediaType 输出 RFC 2231 的 filename*。
+func attachmentContentDisposition(fileName string) string {
+	value := mime.FormatMediaType("attachment", map[string]string{"filename": fileName})
+	if value == "" {
+		return `attachment; filename="book"`
+	}
+	return value
+}
+
+// writeRenameDecodeError 区分 JSON 语法错误与语义校验：未知字段/类型不符
+// 返回 422 并定位字段，语法错误保持 400。
+func writeRenameDecodeError(w http.ResponseWriter, r *http.Request, err error) {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		field := typeErr.Field
+		if field == "" {
+			field = "body"
+		}
+		writeLibraryError(w, r, http.StatusUnprocessableEntity, "invalid_request", "title 类型不正确",
+			map[string]any{"field": field, "reason": "invalid_type"})
+		return
+	}
+	const unknownFieldPrefix = "json: unknown field "
+	if strings.HasPrefix(err.Error(), unknownFieldPrefix) {
+		field := strings.Trim(strings.TrimPrefix(err.Error(), unknownFieldPrefix), `"`)
+		if field == "" {
+			field = "body"
+		}
+		writeLibraryError(w, r, http.StatusUnprocessableEntity, "invalid_request", "请求包含未知字段",
+			map[string]any{"field": field, "reason": "unknown_field"})
+		return
+	}
+	writeLibraryError(w, r, http.StatusBadRequest, "invalid_request", "请求体不是合法的 JSON", nil)
 }
 
 type reindexTaskDTO struct {
